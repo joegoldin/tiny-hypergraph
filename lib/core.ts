@@ -597,6 +597,8 @@ export class TinyHyperGraphSolver extends BaseSolver {
         if (assignedNetId !== -1 && assignedNetId !== state.currentRouteNetId) {
           continue
         }
+        const g = this.computeG(currentCandidate, neighborPortId)
+        if (!Number.isFinite(g)) continue
         this.onPathFound(currentCandidate)
         return
       }
@@ -1536,8 +1538,11 @@ export class TinyHyperGraphSolver extends BaseSolver {
 class GreedyFinalRouteSolver extends TinyHyperGraphSolver {
   override computeG(
     currentCandidate: Candidate,
-    _neighborPortId: PortId,
+    neighborPortId: PortId,
   ): number {
-    return currentCandidate.g
+    const constrainedCost = super.computeG(currentCandidate, neighborPortId)
+    return Number.isFinite(constrainedCost)
+      ? currentCandidate.g
+      : constrainedCost
   }
 }
