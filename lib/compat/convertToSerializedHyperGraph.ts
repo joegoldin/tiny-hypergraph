@@ -2,6 +2,7 @@ import type { SerializedHyperGraph } from "@tscircuit/hypergraph"
 import type { TinyHyperGraphSolver } from "../index"
 import { getAvailableZFromMask, getZLayerLabel } from "../layerLabels"
 import type { PortId, RegionId } from "../types"
+import type { SerializedTinyHyperGraph } from "./serializedFixedOccupancy"
 
 type SerializedConnection = NonNullable<
   SerializedHyperGraph["connections"]
@@ -67,6 +68,26 @@ const getSerializedPortId = (
   }
 
   return `port-${portId}`
+}
+
+const getSerializedNetworkId = (
+  solver: TinyHyperGraphSolver,
+  netId: number,
+  explicitNetworkId?: string,
+): string => {
+  if (explicitNetworkId) return explicitNetworkId
+
+  for (let routeId = 0; routeId < solver.problem.routeCount; routeId++) {
+    if (solver.problem.routeNet[routeId] !== netId) continue
+    const routeMetadata = solver.problem.routeMetadata?.[routeId]
+    const networkId =
+      routeMetadata?.mutuallyConnectedNetworkId ?? routeMetadata?.connectionId
+    if (typeof networkId === "string" && networkId.length > 0) {
+      return networkId
+    }
+  }
+
+  return `net-${netId}`
 }
 
 const getSerializedRegionData = (
@@ -380,7 +401,7 @@ const getSerializedSolvedRoute = (
 
 export const convertToSerializedHyperGraph = (
   solver: TinyHyperGraphSolver,
-): SerializedHyperGraph => {
+): SerializedTinyHyperGraph => {
   if (!solver.solved || solver.failed) {
     throw new Error(
       "convertToSerializedHyperGraph requires a solved, non-failed solver",
@@ -419,11 +440,45 @@ export const convertToSerializedHyperGraph = (
   const serializedRoutes = routeSegmentsByRoute.map((routeSegments, routeId) =>
     getSerializedSolvedRoute(solver, routeId, routeSegments),
   )
+  const fixedOccupancy = solver.problem.fixedOccupancy
+    ? {
+        ...(solver.problem.fixedOccupancy.portReservations && {
+          portReservations: solver.problem.fixedOccupancy.portReservations.map(
+            (reservation) => ({
+              portId: getSerializedPortId(solver, reservation.portId),
+              networkId: getSerializedNetworkId(
+                solver,
+                reservation.netId,
+                reservation.networkId,
+              ),
+              ...(reservation.metadata !== undefined && {
+                d: reservation.metadata,
+              }),
+            }),
+          ),
+        }),
+        ...(solver.problem.fixedOccupancy.segments && {
+          segments: solver.problem.fixedOccupancy.segments.map((segment) => ({
+            regionId: getSerializedRegionId(solver, segment.regionId),
+            fromPortId: getSerializedPortId(solver, segment.fromPortId),
+            toPortId: getSerializedPortId(solver, segment.toPortId),
+            networkId: getSerializedNetworkId(
+              solver,
+              segment.netId,
+              segment.networkId,
+            ),
+            ...(segment.geometry && { geometry: segment.geometry }),
+            ...(segment.metadata !== undefined && { d: segment.metadata }),
+          })),
+        }),
+      }
+    : undefined
 
   return {
     regions,
     ports,
     connections: serializedRoutes.map(({ connection }) => connection),
     solvedRoutes: serializedRoutes.map(({ solvedRoute }) => solvedRoute),
+    ...(fixedOccupancy && { fixedOccupancy }),
   }
 }

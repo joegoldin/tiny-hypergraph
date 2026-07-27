@@ -1,10 +1,11 @@
 import type { SerializedHyperGraph } from "@tscircuit/hypergraph"
 import { BasePipelineSolver, type PipelineStep } from "@tscircuit/solver-utils"
 import type { GraphicsObject } from "graphics-debug"
-import {
-  loadSerializedHyperGraph,
-  type SerializedTinyHyperGraphFixedOccupancy,
-} from "../compat/loadSerializedHyperGraph"
+import { loadSerializedHyperGraph } from "../compat/loadSerializedHyperGraph"
+import type {
+  SerializedTinyHyperGraph,
+  SerializedTinyHyperGraphFixedOccupancy,
+} from "../compat/serializedFixedOccupancy"
 import type {
   TinyHyperGraphProblem,
   TinyHyperGraphSolution,
@@ -78,8 +79,9 @@ const getSerializedOutputMaxRegionCost = (
   sectionSolverOptions?: TinyHyperGraphSectionSolverOptions,
   fixedOccupancy?: SerializedTinyHyperGraphFixedOccupancy,
 ) => {
-  const replay = loadSerializedHyperGraph(serializedHyperGraph, {
-    fixedOccupancy,
+  const replay = loadSerializedHyperGraph({
+    ...serializedHyperGraph,
+    ...(fixedOccupancy && { fixedOccupancy }),
   })
   const replayedSolver = new TinyHyperGraphSectionSolver(
     replay.topology,
@@ -319,8 +321,7 @@ export interface TinyHyperGraphSectionPipelineSearchConfig {
 }
 
 export interface TinyHyperGraphSectionPipelineInput {
-  serializedHyperGraph: SerializedHyperGraph
-  fixedOccupancy?: SerializedTinyHyperGraphFixedOccupancy
+  serializedHyperGraph: SerializedTinyHyperGraph
   minViaPadDiameter?: number
   createSectionMask?: (context: TinyHyperGraphSectionMaskContext) => Int8Array
   solveGraphOptions?: TinyHyperGraphSolverOptions
@@ -344,8 +345,12 @@ export class TinyHyperGraphSectionPipelineSolver extends BasePipelineSolver<Tiny
     problem: TinyHyperGraphProblem
     solution: TinyHyperGraphSolution
   } {
-    return loadSerializedHyperGraph(serializedHyperGraph, {
-      fixedOccupancy: this.inputProblem.fixedOccupancy,
+    const fixedOccupancy =
+      (serializedHyperGraph as SerializedTinyHyperGraph).fixedOccupancy ??
+      this.inputProblem.serializedHyperGraph.fixedOccupancy
+    return loadSerializedHyperGraph({
+      ...serializedHyperGraph,
+      ...(fixedOccupancy && { fixedOccupancy }),
     })
   }
 
@@ -436,7 +441,7 @@ export class TinyHyperGraphSectionPipelineSolver extends BasePipelineSolver<Tiny
             solution,
             this.inputProblem.sectionSearchConfig,
             sectionSolverOptions,
-            this.inputProblem.fixedOccupancy,
+            this.inputProblem.serializedHyperGraph.fixedOccupancy,
           )
 
           this.selectedSectionCandidateLabel =

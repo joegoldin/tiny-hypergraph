@@ -6,32 +6,7 @@ import type {
   TinyHyperGraphTopology,
 } from "../core"
 import { getAvailableZFromMask, getZLayerLabel } from "../layerLabels"
-
-export interface SerializedTinyHyperGraphFixedPortReservation {
-  portId: string
-  netId: string
-}
-
-export interface SerializedTinyHyperGraphFixedSegment {
-  regionId: string
-  fromPortId: string
-  toPortId: string
-  netId: string
-  geometry?: {
-    start: { x: number; y: number }
-    end: { x: number; y: number }
-  }
-  metadata?: unknown
-}
-
-export interface SerializedTinyHyperGraphFixedOccupancy {
-  portReservations?: SerializedTinyHyperGraphFixedPortReservation[]
-  segments?: SerializedTinyHyperGraphFixedSegment[]
-}
-
-export interface LoadSerializedHyperGraphOptions {
-  fixedOccupancy?: SerializedTinyHyperGraphFixedOccupancy
-}
+import type { SerializedTinyHyperGraph } from "./serializedFixedOccupancy"
 
 const getSerializedRegionNetId = (
   region: SerializedHyperGraph["regions"][number],
@@ -350,8 +325,7 @@ const getSharedPortIdsForConnection = (
     .map((port) => port.portId)
 
 export const loadSerializedHyperGraph = (
-  serializedHyperGraph: SerializedHyperGraph,
-  options: LoadSerializedHyperGraphOptions = {},
+  serializedHyperGraph: SerializedTinyHyperGraph,
 ): {
   topology: TinyHyperGraphTopology
   problem: TinyHyperGraphProblem
@@ -646,22 +620,34 @@ export const loadSerializedHyperGraph = (
     return regionIndex
   }
   const fixedOccupancy: TinyHyperGraphFixedOccupancy | undefined =
-    options.fixedOccupancy
+    serializedHyperGraph.fixedOccupancy
       ? {
-          portReservations: (options.fixedOccupancy.portReservations ?? []).map(
-            (reservation) => ({
-              portId: getFixedPortIndex(reservation.portId),
-              netId: getFixedNetIndex(reservation.netId),
-            }),
-          ),
-          segments: (options.fixedOccupancy.segments ?? []).map((segment) => ({
-            regionId: getFixedRegionIndex(segment.regionId),
-            fromPortId: getFixedPortIndex(segment.fromPortId),
-            toPortId: getFixedPortIndex(segment.toPortId),
-            netId: getFixedNetIndex(segment.netId),
-            geometry: segment.geometry,
-            metadata: segment.metadata,
-          })),
+          ...(serializedHyperGraph.fixedOccupancy.portReservations && {
+            portReservations:
+              serializedHyperGraph.fixedOccupancy.portReservations.map(
+                (reservation) => ({
+                  portId: getFixedPortIndex(reservation.portId),
+                  netId: getFixedNetIndex(reservation.networkId),
+                  networkId: reservation.networkId,
+                  ...(reservation.d !== undefined && {
+                    metadata: reservation.d,
+                  }),
+                }),
+              ),
+          }),
+          ...(serializedHyperGraph.fixedOccupancy.segments && {
+            segments: serializedHyperGraph.fixedOccupancy.segments.map(
+              (segment) => ({
+                regionId: getFixedRegionIndex(segment.regionId),
+                fromPortId: getFixedPortIndex(segment.fromPortId),
+                toPortId: getFixedPortIndex(segment.toPortId),
+                netId: getFixedNetIndex(segment.networkId),
+                networkId: segment.networkId,
+                ...(segment.geometry && { geometry: segment.geometry }),
+                ...(segment.d !== undefined && { metadata: segment.d }),
+              }),
+            ),
+          }),
         }
       : undefined
 

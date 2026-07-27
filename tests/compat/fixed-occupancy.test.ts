@@ -3,6 +3,7 @@ import type { SerializedHyperGraph } from "@tscircuit/hypergraph"
 import {
   loadSerializedHyperGraph,
   TinyHyperGraphSectionPipelineSolver,
+  TinyHyperGraphSolver,
 } from "lib/index"
 
 const graph: SerializedHyperGraph = {
@@ -70,20 +71,21 @@ const graph: SerializedHyperGraph = {
 }
 
 test("loads serialized fixed occupancy without changing graph topology", () => {
-  const loaded = loadSerializedHyperGraph(graph, {
+  const loaded = loadSerializedHyperGraph({
+    ...graph,
     fixedOccupancy: {
       segments: [
         {
           regionId: "center",
           fromPortId: "p-top",
           toPortId: "p-bottom",
-          netId: "net-a",
+          networkId: "net-a",
         },
         {
           regionId: "center",
           fromPortId: "p-left",
           toPortId: "p-right",
-          netId: "fixed-only-net",
+          networkId: "fixed-only-net",
         },
       ],
     },
@@ -97,25 +99,24 @@ test("loads serialized fixed occupancy without changing graph topology", () => {
       fromPortId: 1,
       toPortId: 3,
       netId: loaded.problem.routeNet[0],
-      geometry: undefined,
-      metadata: undefined,
+      networkId: "net-a",
     },
     {
       regionId: 1,
       fromPortId: 0,
       toPortId: 2,
       netId: loaded.problem.routeNet[0]! + 1,
-      geometry: undefined,
-      metadata: undefined,
+      networkId: "fixed-only-net",
     },
   ])
 })
 
 test("reports missing serialized fixed occupancy ids clearly", () => {
   expect(() =>
-    loadSerializedHyperGraph(graph, {
+    loadSerializedHyperGraph({
+      ...graph,
       fixedOccupancy: {
-        portReservations: [{ portId: "missing-port", netId: "net-a" }],
+        portReservations: [{ portId: "missing-port", networkId: "net-a" }],
       },
     }),
   ).toThrow('Fixed occupancy references missing port "missing-port"')
@@ -123,16 +124,18 @@ test("reports missing serialized fixed occupancy ids clearly", () => {
 
 test("section pipeline accepts serialized fixed occupancy directly", () => {
   const pipeline = new TinyHyperGraphSectionPipelineSolver({
-    serializedHyperGraph: graph,
-    fixedOccupancy: {
-      segments: [
-        {
-          regionId: "center",
-          fromPortId: "p-top",
-          toPortId: "p-bottom",
-          netId: "net-a",
-        },
-      ],
+    serializedHyperGraph: {
+      ...graph,
+      fixedOccupancy: {
+        segments: [
+          {
+            regionId: "center",
+            fromPortId: "p-top",
+            toPortId: "p-bottom",
+            networkId: "net-a",
+          },
+        ],
+      },
     },
   })
 
@@ -146,4 +149,28 @@ test("section pipeline accepts serialized fixed occupancy directly", () => {
   expect(initialSolver.problem.fixedOccupancy?.segments).toHaveLength(1)
   expect(fixedLines).toHaveLength(1)
   expect(fixedLines[0]?.layer).toBe("z0")
+})
+
+test("solver output preserves serialized fixed occupancy", () => {
+  const fixedOccupancy = {
+    segments: [
+      {
+        regionId: "center",
+        fromPortId: "p-top",
+        toPortId: "p-bottom",
+        networkId: "net-a",
+        d: { traceId: "trace-1" },
+      },
+    ],
+  }
+  const loaded = loadSerializedHyperGraph({ ...graph, fixedOccupancy })
+  const solver = new TinyHyperGraphSolver(loaded.topology, loaded.problem, {
+    STATIC_REACHABILITY_PRECHECK: false,
+  })
+
+  solver.solve()
+
+  expect(solver.solved).toBe(true)
+  expect(solver.failed).toBe(false)
+  expect(solver.getOutput().fixedOccupancy).toEqual(fixedOccupancy)
 })

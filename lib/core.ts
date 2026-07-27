@@ -186,6 +186,8 @@ export interface TinyHyperGraphPoint {
 export interface TinyHyperGraphFixedPortReservation {
   portId: PortId
   netId: NetId
+  networkId?: string
+  metadata?: unknown
 }
 
 export interface TinyHyperGraphFixedSegment {
@@ -193,6 +195,7 @@ export interface TinyHyperGraphFixedSegment {
   fromPortId: PortId
   toPortId: PortId
   netId: NetId
+  networkId?: string
   /**
    * Optional physical geometry for exact same-layer collision checks.
    * Without it, crossings are detected from the segment's boundary ports.

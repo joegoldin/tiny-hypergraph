@@ -12,13 +12,13 @@ export {
   TRACE_VIA_MARGIN,
 } from "./computeRegionCost"
 export { convertPortPointPathingSolverInputToSerializedHyperGraph } from "./compat/convertPortPointPathingSolverInputToSerializedHyperGraph"
+export { loadSerializedHyperGraph } from "./compat/loadSerializedHyperGraph"
 export {
-  loadSerializedHyperGraph,
-  type LoadSerializedHyperGraphOptions,
+  type SerializedTinyHyperGraph,
   type SerializedTinyHyperGraphFixedOccupancy,
   type SerializedTinyHyperGraphFixedPortReservation,
   type SerializedTinyHyperGraphFixedSegment,
-} from "./compat/loadSerializedHyperGraph"
+} from "./compat/serializedFixedOccupancy"
 export {
   TinyHyperGraphSectionSolver,
   type TinyHyperGraphSectionSolverOptions,
