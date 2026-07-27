@@ -498,6 +498,12 @@ export const loadSerializedHyperGraph = (
     )
 
   const routeCount = routableConnections.length
+  const routeIndexByConnectionId = new Map(
+    routableConnections.map(({ connection }, routeIndex) => [
+      connection.connectionId,
+      routeIndex,
+    ]),
+  )
   const portSectionMask = new Int8Array(portCount).fill(1)
   const routeStartPort = new Int32Array(routeCount)
   const routeEndPort = new Int32Array(routeCount)
@@ -558,6 +564,40 @@ export const loadSerializedHyperGraph = (
     portMetadata,
   }
 
+  const initialAssignments = filteredHyperGraph.regions.flatMap(
+    (region, regionIndex) =>
+      (region.assignments ?? []).map((assignment) => {
+        const routeId = routeIndexByConnectionId.get(assignment.connectionId)
+        if (routeId === undefined) {
+          throw new Error(
+            `Region "${region.regionId}" assignment references unknown routable connection "${assignment.connectionId}"`,
+          )
+        }
+        const fromPortId = portIdToIndex.get(assignment.regionPort1Id)
+        const toPortId = portIdToIndex.get(assignment.regionPort2Id)
+        if (fromPortId === undefined || toPortId === undefined) {
+          throw new Error(
+            `Region "${region.regionId}" assignment references missing port "${fromPortId === undefined ? assignment.regionPort1Id : assignment.regionPort2Id}"`,
+          )
+        }
+        if (
+          !regionIncidentPorts[regionIndex]?.includes(fromPortId) ||
+          !regionIncidentPorts[regionIndex]?.includes(toPortId)
+        ) {
+          throw new Error(
+            `Region "${region.regionId}" assignment ports must both belong to the region`,
+          )
+        }
+
+        return {
+          routeId,
+          regionId: regionIndex,
+          fromPortId,
+          toPortId,
+        }
+      }),
+  )
+
   const problem: TinyHyperGraphProblem = {
     routeCount,
     portSectionMask,
@@ -566,6 +606,7 @@ export const loadSerializedHyperGraph = (
     routeEndPort,
     routeNet,
     regionNetId,
+    ...(initialAssignments.length > 0 && { initialAssignments }),
   }
 
   const solvedRoutePathSegments: TinyHyperGraphSolution["solvedRoutePathSegments"] =

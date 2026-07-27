@@ -69,6 +69,17 @@ const getSerializedPortId = (
   return `port-${portId}`
 }
 
+const getSerializedConnectionId = (
+  solver: TinyHyperGraphSolver,
+  routeId: number,
+) => {
+  const routeMetadata = solver.problem.routeMetadata?.[routeId]
+  return isRecord(routeMetadata) &&
+    typeof routeMetadata.connectionId === "string"
+    ? routeMetadata.connectionId
+    : `route-${routeId}`
+}
+
 const getSerializedRegionData = (
   solver: TinyHyperGraphSolver,
   regionId: RegionId,
@@ -273,10 +284,7 @@ const getSerializedConnection = (
   endRegionId: string,
 ): SerializedConnection => {
   const routeMetadata = solver.problem.routeMetadata?.[routeId]
-  const metadataConnectionId =
-    isRecord(routeMetadata) && typeof routeMetadata.connectionId === "string"
-      ? routeMetadata.connectionId
-      : undefined
+  const metadataConnectionId = getSerializedConnectionId(solver, routeId)
   const metadataStartRegionId =
     isRecord(routeMetadata) && typeof routeMetadata.startRegionId === "string"
       ? routeMetadata.startRegionId
@@ -292,7 +300,7 @@ const getSerializedConnection = (
       : undefined
 
   return {
-    connectionId: metadataConnectionId ?? `route-${routeId}`,
+    connectionId: metadataConnectionId,
     startRegionId: metadataStartRegionId ?? startRegionId,
     endRegionId: metadataEndRegionId ?? endRegionId,
     mutuallyConnectedNetworkId:
@@ -392,13 +400,24 @@ export const convertToSerializedHyperGraph = (
 
   const regions = Array.from(
     { length: topology.regionCount },
-    (_, regionId) => ({
-      regionId: getSerializedRegionId(solver, regionId),
-      pointIds: topology.regionIncidentPorts[regionId]!.map((portId) =>
-        getSerializedPortId(solver, portId),
-      ),
-      d: getSerializedRegionData(solver, regionId),
-    }),
+    (_, regionId) => {
+      const assignments = solver.state.regionSegments[regionId]!.map(
+        ([routeId, fromPortId, toPortId]) => ({
+          regionPort1Id: getSerializedPortId(solver, fromPortId),
+          regionPort2Id: getSerializedPortId(solver, toPortId),
+          connectionId: getSerializedConnectionId(solver, routeId),
+        }),
+      )
+
+      return {
+        regionId: getSerializedRegionId(solver, regionId),
+        pointIds: topology.regionIncidentPorts[regionId]!.map((portId) =>
+          getSerializedPortId(solver, portId),
+        ),
+        d: getSerializedRegionData(solver, regionId),
+        ...(assignments.length > 0 && { assignments }),
+      }
+    },
   )
 
   const ports = Array.from({ length: topology.portCount }, (_, portId) => {

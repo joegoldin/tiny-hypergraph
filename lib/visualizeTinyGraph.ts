@@ -488,6 +488,7 @@ const pushSolvedRegionSegments = (
           `region: region-${regionId}`,
           getPortPairZLabel(solver, port1Id, port2Id),
         ),
+        layer: getPortVisualizationLayer(solver, port1Id),
         ...getSegmentStyle(solver, routeId, port1Id, port2Id),
       })
     }
@@ -580,8 +581,11 @@ const pushUnassignedPortCircles = (
 const pushInitialRouteHints = (
   solver: TinyHyperGraphSolver,
   graphics: Required<GraphicsObject>,
+  routeIds?: ReadonlySet<RouteId>,
 ) => {
   for (let routeId = 0; routeId < solver.problem.routeCount; routeId++) {
+    if (routeIds && !routeIds.has(routeId)) continue
+
     const startPortId = solver.problem.routeStartPort[routeId]
     const endPortId = solver.problem.routeEndPort[routeId]
     const startPoint = getPortRenderPoint(solver, startPortId)
@@ -595,6 +599,7 @@ const pushInitialRouteHints = (
       points: [startPoint, endPoint],
       strokeColor: getRenderedRouteColor(solver, routeId),
       strokeDash: "3 3",
+      layer: getPortVisualizationLayer(solver, startPortId),
       label: formatLabel(
         getRouteLabel(solver, routeId),
         getRouteEndpointZLabel(solver, routeId),
@@ -605,6 +610,7 @@ const pushInitialRouteHints = (
       x: midPoint.x,
       y: midPoint.y,
       color: getRenderedRouteColor(solver, routeId, 1),
+      layer: getPortVisualizationLayer(solver, startPortId),
       label: formatLabel(
         getRouteLabel(solver, routeId),
         getRouteEndpointZLabel(solver, routeId),
@@ -964,8 +970,23 @@ export const visualizeTinyHyperGraph = (
     if (staticallyUnroutableRouteIds) {
       visualizeStaticReachabilityFailure(solver, graphics)
     } else {
+      const initiallyAssignedRouteIds = new Set<RouteId>()
+      for (const regionSegments of solver.state.regionSegments) {
+        for (const [routeId] of regionSegments) {
+          initiallyAssignedRouteIds.add(routeId)
+        }
+      }
+      if (initiallyAssignedRouteIds.size > 0) {
+        pushSolvedRegionSegments(solver, graphics)
+        pushRoutePortZPoints(solver, graphics)
+      }
+
       if (options.showInitialRouteHints !== false) {
-        pushInitialRouteHints(solver, graphics)
+        const pendingRouteIds = new Set(solver.state.unroutedRoutes)
+        if (solver.state.currentRouteId !== undefined) {
+          pendingRouteIds.add(solver.state.currentRouteId)
+        }
+        pushInitialRouteHints(solver, graphics, pendingRouteIds)
       }
     }
   } else {

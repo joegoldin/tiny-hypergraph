@@ -27,6 +27,34 @@ if (!solver.solved || solver.failed) {
 const solvedGraph = solver.getOutput()
 ```
 
+Existing routing can be preloaded through the standard region assignments:
+
+```ts
+const inputGraph: SerializedHyperGraph = {
+  regions: [
+    {
+      regionId: "middle",
+      pointIds: ["left-port", "right-port"],
+      assignments: [
+        {
+          regionPort1Id: "left-port",
+          regionPort2Id: "right-port",
+          connectionId: "trace-1",
+        },
+      ],
+      d: {},
+    },
+  ],
+  ports,
+  connections,
+}
+```
+
+The assignments seed regular route-owned solver state. They reserve their
+existing ports and contribute to region congestion immediately, but remain
+eligible for the normal rip-and-reroute process. They do not create regions or
+otherwise change the hypergraph topology.
+
 ### Export a solved solver back to `SerializedHyperGraph`
 
 `solver.getOutput()` now returns a `SerializedHyperGraph` for a solved
@@ -36,6 +64,7 @@ Under the hood it uses
 `lib/compat/convertToSerializedHyperGraph.ts`, which reconstructs:
 
 - `regions`
+- region `assignments`
 - `ports`
 - `connections`
 - `solvedRoutes`

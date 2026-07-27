@@ -7,6 +7,10 @@ import {
   isKnownSingleLayerMask,
 } from "./computeRegionCost"
 import { countNewIntersectionsWithValues } from "./countNewIntersections"
+import {
+  applyInitialAssignments,
+  type TinyHyperGraphInitialAssignment,
+} from "./initialAssignments"
 import { MinHeap } from "./MinHeap"
 import { shuffle } from "./shuffle"
 import type { StaticallyUnroutableRouteSummary } from "./static-reachability"
@@ -27,6 +31,7 @@ import { range } from "./utils"
 import { visualizeTinyGraph } from "./visualizeTinyGraph"
 
 export type { StaticallyUnroutableRouteSummary } from "./static-reachability"
+export type { TinyHyperGraphInitialAssignment } from "./initialAssignments"
 
 const GREEDY_FINAL_ROUTE_MAX_ITERATIONS = 50e3
 
@@ -116,6 +121,7 @@ export interface TinyHyperGraphTopology {
 
   portMetadata?: any[]
 }
+
 export interface TinyHyperGraphProblem {
   routeCount: number
 
@@ -139,6 +145,14 @@ export interface TinyHyperGraphProblem {
 
   /** portPenalty[portId] = extra cost paid when a route traverses the port */
   portPenalty?: Float64Array
+
+  /**
+   * Existing serialized region assignments, converted to numeric ids.
+   *
+   * These are regular route-owned assignments: they seed the initial routing
+   * state and may be ripped and rerouted by the normal solver machinery.
+   */
+  initialAssignments?: TinyHyperGraphInitialAssignment[]
 }
 
 export interface TinyHyperGraphProblemSetup {
@@ -409,6 +423,20 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
     this.routeAttemptCountByRouteId = new Uint32Array(problem.routeCount)
     this.routeSuccessCountByRouteId = new Uint32Array(problem.routeCount)
+    const initialAssignmentStats = applyInitialAssignments({
+      topology,
+      problem,
+      state: this.state,
+      routeSuccessCountByRouteId: this.routeSuccessCountByRouteId,
+      appendSegmentToRegionCache: (regionId, fromPortId, toPortId) =>
+        this.appendSegmentToRegionCache(regionId, fromPortId, toPortId),
+    })
+    if (initialAssignmentStats) {
+      this.stats = {
+        ...this.stats,
+        ...initialAssignmentStats,
+      }
+    }
   }
 
   get problemSetup(): TinyHyperGraphProblemSetup {
