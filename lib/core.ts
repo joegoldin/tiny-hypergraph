@@ -7,6 +7,10 @@ import {
   isKnownSingleLayerMask,
 } from "./computeRegionCost"
 import { countNewIntersectionsWithValues } from "./countNewIntersections"
+import {
+  applyInitialAssignments,
+  type TinyHyperGraphInitialAssignment,
+} from "./initialAssignments"
 import { MinHeap } from "./MinHeap"
 import { shuffle } from "./shuffle"
 import type { StaticallyUnroutableRouteSummary } from "./static-reachability"
@@ -27,6 +31,7 @@ import { range } from "./utils"
 import { visualizeTinyGraph } from "./visualizeTinyGraph"
 
 export type { StaticallyUnroutableRouteSummary } from "./static-reachability"
+export type { TinyHyperGraphInitialAssignment } from "./initialAssignments"
 
 const GREEDY_FINAL_ROUTE_MAX_ITERATIONS = 50e3
 
@@ -115,13 +120,6 @@ export interface TinyHyperGraphTopology {
   portZ: Int32Array
 
   portMetadata?: any[]
-}
-
-export interface TinyHyperGraphInitialAssignment {
-  routeId: RouteId
-  regionId: RegionId
-  fromPortId: PortId
-  toPortId: PortId
 }
 
 export interface TinyHyperGraphProblem {
@@ -425,139 +423,19 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
     this.routeAttemptCountByRouteId = new Uint32Array(problem.routeCount)
     this.routeSuccessCountByRouteId = new Uint32Array(problem.routeCount)
-    this.applyInitialAssignments()
-  }
-
-  private applyInitialAssignments() {
-    const assignments = this.problem.initialAssignments ?? []
-    if (assignments.length === 0) return
-
-    const assignmentsByRoute = new Map<
-      RouteId,
-      TinyHyperGraphInitialAssignment[]
-    >()
-
-    for (const assignment of assignments) {
-      const { routeId, regionId, fromPortId, toPortId } = assignment
-      if (
-        !Number.isInteger(routeId) ||
-        routeId < 0 ||
-        routeId >= this.problem.routeCount
-      ) {
-        throw new Error(
-          `Initial assignment references invalid route ${routeId}`,
-        )
+    const initialAssignmentStats = applyInitialAssignments({
+      topology,
+      problem,
+      state: this.state,
+      routeSuccessCountByRouteId: this.routeSuccessCountByRouteId,
+      appendSegmentToRegionCache: (regionId, fromPortId, toPortId) =>
+        this.appendSegmentToRegionCache(regionId, fromPortId, toPortId),
+    })
+    if (initialAssignmentStats) {
+      this.stats = {
+        ...this.stats,
+        ...initialAssignmentStats,
       }
-      if (
-        !Number.isInteger(regionId) ||
-        regionId < 0 ||
-        regionId >= this.topology.regionCount
-      ) {
-        throw new Error(
-          `Initial assignment references invalid region ${regionId}`,
-        )
-      }
-      for (const portId of [fromPortId, toPortId]) {
-        if (
-          !Number.isInteger(portId) ||
-          portId < 0 ||
-          portId >= this.topology.portCount
-        ) {
-          throw new Error(
-            `Initial assignment references invalid port ${portId}`,
-          )
-        }
-        if (!this.topology.incidentPortRegion[portId]?.includes(regionId)) {
-          throw new Error(
-            `Initial assignment port ${portId} is not incident to region ${regionId}`,
-          )
-        }
-      }
-
-      const routeAssignments = assignmentsByRoute.get(routeId) ?? []
-      routeAssignments.push(assignment)
-      assignmentsByRoute.set(routeId, routeAssignments)
-    }
-
-    for (const [routeId, routeAssignments] of assignmentsByRoute) {
-      this.assertAssignmentsConnectRoute(routeId, routeAssignments)
-    }
-
-    const initiallyRoutedRouteIds = new Set(assignmentsByRoute.keys())
-    for (const { routeId, regionId, fromPortId, toPortId } of assignments) {
-      const routeNetId = this.problem.routeNet[routeId]!
-      for (const portId of [fromPortId, toPortId]) {
-        const assignedNetId = this.state.portAssignment[portId]!
-        if (assignedNetId !== -1 && assignedNetId !== routeNetId) {
-          throw new Error(
-            `Initial assignment port ${portId} is assigned to multiple nets`,
-          )
-        }
-        this.state.portAssignment[portId] = routeNetId
-      }
-
-      this.state.currentRouteNetId = routeNetId
-      this.state.regionSegments[regionId]!.push([routeId, fromPortId, toPortId])
-      this.appendSegmentToRegionCache(regionId, fromPortId, toPortId)
-    }
-
-    this.state.currentRouteNetId = undefined
-    this.state.unroutedRoutes = this.state.unroutedRoutes.filter(
-      (routeId) => !initiallyRoutedRouteIds.has(routeId),
-    )
-    for (const routeId of initiallyRoutedRouteIds) {
-      this.routeSuccessCountByRouteId[routeId] = 1
-    }
-    this.stats = {
-      ...this.stats,
-      initialAssignmentCount: assignments.length,
-      initiallyRoutedRouteCount: initiallyRoutedRouteIds.size,
-    }
-  }
-
-  private assertAssignmentsConnectRoute(
-    routeId: RouteId,
-    assignments: TinyHyperGraphInitialAssignment[],
-  ) {
-    const startPortId = this.problem.routeStartPort[routeId]!
-    const endPortId = this.problem.routeEndPort[routeId]!
-    const adjacentPortIds = new Map<PortId, Set<PortId>>()
-
-    for (const { fromPortId, toPortId } of assignments) {
-      const fromNeighbors = adjacentPortIds.get(fromPortId) ?? new Set<PortId>()
-      fromNeighbors.add(toPortId)
-      adjacentPortIds.set(fromPortId, fromNeighbors)
-
-      const toNeighbors = adjacentPortIds.get(toPortId) ?? new Set<PortId>()
-      toNeighbors.add(fromPortId)
-      adjacentPortIds.set(toPortId, toNeighbors)
-    }
-
-    const visitedPortIds = new Set<PortId>()
-    const pendingPortIds = [startPortId]
-    while (pendingPortIds.length > 0) {
-      const portId = pendingPortIds.pop()!
-      if (visitedPortIds.has(portId)) continue
-      visitedPortIds.add(portId)
-      for (const adjacentPortId of adjacentPortIds.get(portId) ?? []) {
-        pendingPortIds.push(adjacentPortId)
-      }
-    }
-
-    if (!visitedPortIds.has(endPortId)) {
-      throw new Error(
-        `Initial assignments for route ${routeId} do not connect ${startPortId} to ${endPortId}`,
-      )
-    }
-    if (
-      assignments.some(
-        ({ fromPortId, toPortId }) =>
-          !visitedPortIds.has(fromPortId) || !visitedPortIds.has(toPortId),
-      )
-    ) {
-      throw new Error(
-        `Initial assignments for route ${routeId} contain disconnected segments`,
-      )
     }
   }
 
