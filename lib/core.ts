@@ -29,67 +29,6 @@ import { visualizeTinyGraph } from "./visualizeTinyGraph"
 export type { StaticallyUnroutableRouteSummary } from "./static-reachability"
 
 const GREEDY_FINAL_ROUTE_MAX_ITERATIONS = 50e3
-const FIXED_OCCUPANCY_GEOMETRY_EPSILON = 1e-6
-
-const pointToSegmentDistance = (
-  point: TinyHyperGraphPoint,
-  start: TinyHyperGraphPoint,
-  end: TinyHyperGraphPoint,
-) => {
-  const dx = end.x - start.x
-  const dy = end.y - start.y
-  const lengthSquared = dx * dx + dy * dy
-  if (lengthSquared === 0) {
-    return Math.hypot(point.x - start.x, point.y - start.y)
-  }
-
-  const projection = Math.max(
-    0,
-    Math.min(
-      1,
-      ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared,
-    ),
-  )
-  return Math.hypot(
-    point.x - (start.x + projection * dx),
-    point.y - (start.y + projection * dy),
-  )
-}
-
-const orientation = (
-  first: TinyHyperGraphPoint,
-  second: TinyHyperGraphPoint,
-  third: TinyHyperGraphPoint,
-) =>
-  (second.x - first.x) * (third.y - first.y) -
-  (second.y - first.y) * (third.x - first.x)
-
-const lineSegmentsTouch = (
-  firstStart: TinyHyperGraphPoint,
-  firstEnd: TinyHyperGraphPoint,
-  secondStart: TinyHyperGraphPoint,
-  secondEnd: TinyHyperGraphPoint,
-) => {
-  const firstStartSide = orientation(secondStart, secondEnd, firstStart)
-  const firstEndSide = orientation(secondStart, secondEnd, firstEnd)
-  const secondStartSide = orientation(firstStart, firstEnd, secondStart)
-  const secondEndSide = orientation(firstStart, firstEnd, secondEnd)
-  if (
-    firstStartSide * firstEndSide < 0 &&
-    secondStartSide * secondEndSide < 0
-  ) {
-    return true
-  }
-
-  return (
-    Math.min(
-      pointToSegmentDistance(firstStart, secondStart, secondEnd),
-      pointToSegmentDistance(firstEnd, secondStart, secondEnd),
-      pointToSegmentDistance(secondStart, firstStart, firstEnd),
-      pointToSegmentDistance(secondEnd, firstStart, firstEnd),
-    ) <= FIXED_OCCUPANCY_GEOMETRY_EPSILON
-  )
-}
 
 export const createEmptyRegionIntersectionCache =
   (): RegionIntersectionCache => ({
@@ -178,42 +117,11 @@ export interface TinyHyperGraphTopology {
   portMetadata?: any[]
 }
 
-export interface TinyHyperGraphPoint {
-  x: number
-  y: number
-}
-
-export interface TinyHyperGraphFixedPortReservation {
-  portId: PortId
-  netId: NetId
-  networkId?: string
-  metadata?: unknown
-}
-
-export interface TinyHyperGraphFixedSegment {
+export interface TinyHyperGraphInitialAssignment {
+  routeId: RouteId
   regionId: RegionId
   fromPortId: PortId
   toPortId: PortId
-  netId: NetId
-  networkId?: string
-  /**
-   * Optional physical geometry for exact same-layer collision checks.
-   * Without it, crossings are detected from the segment's boundary ports.
-   */
-  geometry?: {
-    start: TinyHyperGraphPoint
-    end: TinyHyperGraphPoint
-  }
-  metadata?: unknown
-}
-
-/**
- * Immutable occupancy that participates in routing without becoming a solved
- * route or changing the hypergraph topology.
- */
-export interface TinyHyperGraphFixedOccupancy {
-  portReservations?: TinyHyperGraphFixedPortReservation[]
-  segments?: TinyHyperGraphFixedSegment[]
 }
 
 export interface TinyHyperGraphProblem {
@@ -241,10 +149,12 @@ export interface TinyHyperGraphProblem {
   portPenalty?: Float64Array
 
   /**
-   * Existing immutable trace occupancy. Fixed segments reserve their endpoint
-   * ports automatically, seed region costs, and are excluded from route output.
+   * Existing serialized region assignments, converted to numeric ids.
+   *
+   * These are regular route-owned assignments: they seed the initial routing
+   * state and may be ripped and rerouted by the normal solver machinery.
    */
-  fixedOccupancy?: TinyHyperGraphFixedOccupancy
+  initialAssignments?: TinyHyperGraphInitialAssignment[]
 }
 
 export interface TinyHyperGraphProblemSetup {
@@ -459,7 +369,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
   protected bestSolvedStateSummary?: RegionCostSummary
   private hasLoggedNeverSuccessfullyRoutedRoutes = false
   private staticallyUnroutableRoutes: StaticallyUnroutableRouteSummary[] = []
-  private fixedSegmentsByRegion: TinyHyperGraphFixedSegment[][] = []
   private segmentGeometryScratch: SegmentGeometryScratch = {
     lesserAngle: 0,
     greaterAngle: 0,
@@ -516,15 +425,140 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
     this.routeAttemptCountByRouteId = new Uint32Array(problem.routeCount)
     this.routeSuccessCountByRouteId = new Uint32Array(problem.routeCount)
-    this.validateFixedOccupancy()
-    this.fixedSegmentsByRegion = Array.from(
-      { length: topology.regionCount },
-      () => [],
-    )
-    for (const segment of problem.fixedOccupancy?.segments ?? []) {
-      this.fixedSegmentsByRegion[segment.regionId]!.push(segment)
+    this.applyInitialAssignments()
+  }
+
+  private applyInitialAssignments() {
+    const assignments = this.problem.initialAssignments ?? []
+    if (assignments.length === 0) return
+
+    const assignmentsByRoute = new Map<
+      RouteId,
+      TinyHyperGraphInitialAssignment[]
+    >()
+
+    for (const assignment of assignments) {
+      const { routeId, regionId, fromPortId, toPortId } = assignment
+      if (
+        !Number.isInteger(routeId) ||
+        routeId < 0 ||
+        routeId >= this.problem.routeCount
+      ) {
+        throw new Error(
+          `Initial assignment references invalid route ${routeId}`,
+        )
+      }
+      if (
+        !Number.isInteger(regionId) ||
+        regionId < 0 ||
+        regionId >= this.topology.regionCount
+      ) {
+        throw new Error(
+          `Initial assignment references invalid region ${regionId}`,
+        )
+      }
+      for (const portId of [fromPortId, toPortId]) {
+        if (
+          !Number.isInteger(portId) ||
+          portId < 0 ||
+          portId >= this.topology.portCount
+        ) {
+          throw new Error(
+            `Initial assignment references invalid port ${portId}`,
+          )
+        }
+        if (!this.topology.incidentPortRegion[portId]?.includes(regionId)) {
+          throw new Error(
+            `Initial assignment port ${portId} is not incident to region ${regionId}`,
+          )
+        }
+      }
+
+      const routeAssignments = assignmentsByRoute.get(routeId) ?? []
+      routeAssignments.push(assignment)
+      assignmentsByRoute.set(routeId, routeAssignments)
     }
-    this.applyFixedOccupancyToRoutingState()
+
+    for (const [routeId, routeAssignments] of assignmentsByRoute) {
+      this.assertAssignmentsConnectRoute(routeId, routeAssignments)
+    }
+
+    const initiallyRoutedRouteIds = new Set(assignmentsByRoute.keys())
+    for (const { routeId, regionId, fromPortId, toPortId } of assignments) {
+      const routeNetId = this.problem.routeNet[routeId]!
+      for (const portId of [fromPortId, toPortId]) {
+        const assignedNetId = this.state.portAssignment[portId]!
+        if (assignedNetId !== -1 && assignedNetId !== routeNetId) {
+          throw new Error(
+            `Initial assignment port ${portId} is assigned to multiple nets`,
+          )
+        }
+        this.state.portAssignment[portId] = routeNetId
+      }
+
+      this.state.currentRouteNetId = routeNetId
+      this.state.regionSegments[regionId]!.push([routeId, fromPortId, toPortId])
+      this.appendSegmentToRegionCache(regionId, fromPortId, toPortId)
+    }
+
+    this.state.currentRouteNetId = undefined
+    this.state.unroutedRoutes = this.state.unroutedRoutes.filter(
+      (routeId) => !initiallyRoutedRouteIds.has(routeId),
+    )
+    for (const routeId of initiallyRoutedRouteIds) {
+      this.routeSuccessCountByRouteId[routeId] = 1
+    }
+    this.stats = {
+      ...this.stats,
+      initialAssignmentCount: assignments.length,
+      initiallyRoutedRouteCount: initiallyRoutedRouteIds.size,
+    }
+  }
+
+  private assertAssignmentsConnectRoute(
+    routeId: RouteId,
+    assignments: TinyHyperGraphInitialAssignment[],
+  ) {
+    const startPortId = this.problem.routeStartPort[routeId]!
+    const endPortId = this.problem.routeEndPort[routeId]!
+    const adjacentPortIds = new Map<PortId, Set<PortId>>()
+
+    for (const { fromPortId, toPortId } of assignments) {
+      const fromNeighbors = adjacentPortIds.get(fromPortId) ?? new Set<PortId>()
+      fromNeighbors.add(toPortId)
+      adjacentPortIds.set(fromPortId, fromNeighbors)
+
+      const toNeighbors = adjacentPortIds.get(toPortId) ?? new Set<PortId>()
+      toNeighbors.add(fromPortId)
+      adjacentPortIds.set(toPortId, toNeighbors)
+    }
+
+    const visitedPortIds = new Set<PortId>()
+    const pendingPortIds = [startPortId]
+    while (pendingPortIds.length > 0) {
+      const portId = pendingPortIds.pop()!
+      if (visitedPortIds.has(portId)) continue
+      visitedPortIds.add(portId)
+      for (const adjacentPortId of adjacentPortIds.get(portId) ?? []) {
+        pendingPortIds.push(adjacentPortId)
+      }
+    }
+
+    if (!visitedPortIds.has(endPortId)) {
+      throw new Error(
+        `Initial assignments for route ${routeId} do not connect ${startPortId} to ${endPortId}`,
+      )
+    }
+    if (
+      assignments.some(
+        ({ fromPortId, toPortId }) =>
+          !visitedPortIds.has(fromPortId) || !visitedPortIds.has(toPortId),
+      )
+    ) {
+      throw new Error(
+        `Initial assignments for route ${routeId} contain disconnected segments`,
+      )
+    }
   }
 
   get problemSetup(): TinyHyperGraphProblemSetup {
@@ -576,14 +610,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
             Math.hypot(dx, dy) * this.DISTANCE_TO_COST
         }
       }
-    }
-
-    for (const reservation of problem.fixedOccupancy?.portReservations ?? []) {
-      recordEndpointNet(reservation.portId, reservation.netId)
-    }
-    for (const segment of problem.fixedOccupancy?.segments ?? []) {
-      recordEndpointNet(segment.fromPortId, segment.netId)
-      recordEndpointNet(segment.toPortId, segment.netId)
     }
 
     return {
@@ -693,15 +719,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
         if (assignedNetId !== -1 && assignedNetId !== state.currentRouteNetId) {
           continue
         }
-        if (
-          this.isHopBlockedByFixedOccupancy(
-            currentCandidate.nextRegionId,
-            currentCandidate.portId,
-            neighborPortId,
-          )
-        ) {
-          continue
-        }
         this.onPathFound(currentCandidate)
         return
       }
@@ -710,15 +727,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
       }
       if (neighborPortId === currentCandidate.portId) continue
       if (problem.portSectionMask[neighborPortId] === 0) continue
-      if (
-        this.isHopBlockedByFixedOccupancy(
-          currentCandidate.nextRegionId,
-          currentCandidate.portId,
-          neighborPortId,
-        )
-      ) {
-        continue
-      }
 
       const g = this.computeG(currentCandidate, neighborPortId)
       if (!Number.isFinite(g)) continue
@@ -977,30 +985,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
   }
 
-  /**
-   * Seeds immutable fixed segments into the region intersection caches. This
-   * intentionally does not add them to regionSegments or portAssignment.
-   */
-  protected applyFixedOccupancyToRoutingState() {
-    const { state } = this
-    const previousRouteId = state.currentRouteId
-    const previousRouteNetId = state.currentRouteNetId
-
-    for (const segments of this.fixedSegmentsByRegion) {
-      for (const segment of segments) {
-        state.currentRouteNetId = segment.netId
-        this.appendSegmentToRegionCache(
-          segment.regionId,
-          segment.fromPortId,
-          segment.toPortId,
-        )
-      }
-    }
-
-    state.currentRouteId = previousRouteId
-    state.currentRouteNetId = previousRouteNetId
-  }
-
   getSolvedPathSegments(finalCandidate: Candidate): Array<{
     regionId: RegionId
     fromPortId: PortId
@@ -1053,7 +1037,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
       { length: topology.regionCount },
       () => createEmptyRegionIntersectionCache(),
     )
-    this.applyFixedOccupancyToRoutingState()
     state.currentRouteNetId = undefined
     state.currentRouteId = undefined
     state.unroutedRoutes = shuffle(range(problem.routeCount), state.ripCount)
@@ -1606,171 +1589,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
       state.regionCongestionCost[nextRegionId] +
       (this.problem.portPenalty?.[neighborPortId] ?? 0)
     )
-  }
-
-  isHopBlockedByFixedOccupancy(
-    regionId: RegionId,
-    fromPortId: PortId,
-    toPortId: PortId,
-    routeNetId = this.state.currentRouteNetId,
-  ): boolean {
-    if (routeNetId === undefined) {
-      return false
-    }
-
-    const candidateFromZ = this.topology.portZ[fromPortId]
-    const candidateToZ = this.topology.portZ[toPortId]
-    if (candidateFromZ !== candidateToZ) {
-      return false
-    }
-
-    const candidateGeometry = {
-      start: {
-        x: this.topology.portX[fromPortId],
-        y: this.topology.portY[fromPortId],
-      },
-      end: {
-        x: this.topology.portX[toPortId],
-        y: this.topology.portY[toPortId],
-      },
-    }
-
-    for (const segment of this.fixedSegmentsByRegion[regionId] ?? []) {
-      if (segment.netId === routeNetId) {
-        continue
-      }
-
-      const fixedFromZ = this.topology.portZ[segment.fromPortId]
-      const fixedToZ = this.topology.portZ[segment.toPortId]
-      if (fixedFromZ !== fixedToZ || fixedFromZ !== candidateFromZ) {
-        continue
-      }
-
-      if (
-        this.segmentsCrossTopologically(
-          regionId,
-          fromPortId,
-          toPortId,
-          segment.fromPortId,
-          segment.toPortId,
-        )
-      ) {
-        return true
-      }
-
-      if (
-        segment.geometry &&
-        lineSegmentsTouch(
-          candidateGeometry.start,
-          candidateGeometry.end,
-          segment.geometry.start,
-          segment.geometry.end,
-        )
-      ) {
-        return true
-      }
-    }
-
-    return false
-  }
-
-  protected segmentsCrossTopologically(
-    regionId: RegionId,
-    firstFromPortId: PortId,
-    firstToPortId: PortId,
-    secondFromPortId: PortId,
-    secondToPortId: PortId,
-  ): boolean {
-    const first = {
-      ...this.populateSegmentGeometryScratch(
-        regionId,
-        firstFromPortId,
-        firstToPortId,
-      ),
-    }
-    const second = {
-      ...this.populateSegmentGeometryScratch(
-        regionId,
-        secondFromPortId,
-        secondToPortId,
-      ),
-    }
-    if ((first.layerMask & second.layerMask) === 0) return false
-    if (
-      first.lesserAngle === second.lesserAngle ||
-      first.lesserAngle === second.greaterAngle ||
-      first.greaterAngle === second.lesserAngle ||
-      first.greaterAngle === second.greaterAngle
-    ) {
-      return false
-    }
-
-    const secondLesserInsideFirst =
-      first.lesserAngle < second.lesserAngle &&
-      second.lesserAngle < first.greaterAngle
-    const secondGreaterInsideFirst =
-      first.lesserAngle < second.greaterAngle &&
-      second.greaterAngle < first.greaterAngle
-    return secondLesserInsideFirst !== secondGreaterInsideFirst
-  }
-
-  private validateFixedOccupancy() {
-    const assertPortId = (portId: PortId, context: string) => {
-      if (
-        !Number.isInteger(portId) ||
-        portId < 0 ||
-        portId >= this.topology.portCount
-      ) {
-        throw new Error(`${context} references invalid port ${portId}`)
-      }
-    }
-    const assertNetId = (netId: NetId, context: string) => {
-      if (!Number.isInteger(netId) || netId < 0) {
-        throw new Error(`${context} references invalid net ${netId}`)
-      }
-    }
-    const assertPoint = (point: TinyHyperGraphPoint, context: string) => {
-      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-        throw new Error(`${context} must contain finite x and y coordinates`)
-      }
-    }
-
-    for (const reservation of this.problem.fixedOccupancy?.portReservations ??
-      []) {
-      assertPortId(reservation.portId, "Fixed port reservation")
-      assertNetId(reservation.netId, "Fixed port reservation")
-    }
-
-    for (const segment of this.problem.fixedOccupancy?.segments ?? []) {
-      assertPortId(segment.fromPortId, "Fixed segment")
-      assertPortId(segment.toPortId, "Fixed segment")
-      assertNetId(segment.netId, "Fixed segment")
-      if (
-        !Number.isInteger(segment.regionId) ||
-        segment.regionId < 0 ||
-        segment.regionId >= this.topology.regionCount
-      ) {
-        throw new Error(
-          `Fixed segment references invalid region ${segment.regionId}`,
-        )
-      }
-      if (
-        !this.topology.incidentPortRegion[segment.fromPortId]?.includes(
-          segment.regionId,
-        ) ||
-        !this.topology.incidentPortRegion[segment.toPortId]?.includes(
-          segment.regionId,
-        )
-      ) {
-        throw new Error(
-          `Fixed segment ports ${segment.fromPortId} and ${segment.toPortId} must both be incident to region ${segment.regionId}`,
-        )
-      }
-      if (segment.geometry) {
-        assertPoint(segment.geometry.start, "Fixed segment geometry start")
-        assertPoint(segment.geometry.end, "Fixed segment geometry end")
-      }
-    }
   }
 
   override tryFinalAcceptance() {

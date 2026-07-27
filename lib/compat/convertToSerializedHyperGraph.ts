@@ -2,7 +2,6 @@ import type { SerializedHyperGraph } from "@tscircuit/hypergraph"
 import type { TinyHyperGraphSolver } from "../index"
 import { getAvailableZFromMask, getZLayerLabel } from "../layerLabels"
 import type { PortId, RegionId } from "../types"
-import type { SerializedTinyHyperGraph } from "./serializedFixedOccupancy"
 
 type SerializedConnection = NonNullable<
   SerializedHyperGraph["connections"]
@@ -70,24 +69,15 @@ const getSerializedPortId = (
   return `port-${portId}`
 }
 
-const getSerializedNetworkId = (
+const getSerializedConnectionId = (
   solver: TinyHyperGraphSolver,
-  netId: number,
-  explicitNetworkId?: string,
-): string => {
-  if (explicitNetworkId) return explicitNetworkId
-
-  for (let routeId = 0; routeId < solver.problem.routeCount; routeId++) {
-    if (solver.problem.routeNet[routeId] !== netId) continue
-    const routeMetadata = solver.problem.routeMetadata?.[routeId]
-    const networkId =
-      routeMetadata?.mutuallyConnectedNetworkId ?? routeMetadata?.connectionId
-    if (typeof networkId === "string" && networkId.length > 0) {
-      return networkId
-    }
-  }
-
-  return `net-${netId}`
+  routeId: number,
+) => {
+  const routeMetadata = solver.problem.routeMetadata?.[routeId]
+  return isRecord(routeMetadata) &&
+    typeof routeMetadata.connectionId === "string"
+    ? routeMetadata.connectionId
+    : `route-${routeId}`
 }
 
 const getSerializedRegionData = (
@@ -294,10 +284,7 @@ const getSerializedConnection = (
   endRegionId: string,
 ): SerializedConnection => {
   const routeMetadata = solver.problem.routeMetadata?.[routeId]
-  const metadataConnectionId =
-    isRecord(routeMetadata) && typeof routeMetadata.connectionId === "string"
-      ? routeMetadata.connectionId
-      : undefined
+  const metadataConnectionId = getSerializedConnectionId(solver, routeId)
   const metadataStartRegionId =
     isRecord(routeMetadata) && typeof routeMetadata.startRegionId === "string"
       ? routeMetadata.startRegionId
@@ -313,7 +300,7 @@ const getSerializedConnection = (
       : undefined
 
   return {
-    connectionId: metadataConnectionId ?? `route-${routeId}`,
+    connectionId: metadataConnectionId,
     startRegionId: metadataStartRegionId ?? startRegionId,
     endRegionId: metadataEndRegionId ?? endRegionId,
     mutuallyConnectedNetworkId:
@@ -401,7 +388,7 @@ const getSerializedSolvedRoute = (
 
 export const convertToSerializedHyperGraph = (
   solver: TinyHyperGraphSolver,
-): SerializedTinyHyperGraph => {
+): SerializedHyperGraph => {
   if (!solver.solved || solver.failed) {
     throw new Error(
       "convertToSerializedHyperGraph requires a solved, non-failed solver",
@@ -413,13 +400,24 @@ export const convertToSerializedHyperGraph = (
 
   const regions = Array.from(
     { length: topology.regionCount },
-    (_, regionId) => ({
-      regionId: getSerializedRegionId(solver, regionId),
-      pointIds: topology.regionIncidentPorts[regionId]!.map((portId) =>
-        getSerializedPortId(solver, portId),
-      ),
-      d: getSerializedRegionData(solver, regionId),
-    }),
+    (_, regionId) => {
+      const assignments = solver.state.regionSegments[regionId]!.map(
+        ([routeId, fromPortId, toPortId]) => ({
+          regionPort1Id: getSerializedPortId(solver, fromPortId),
+          regionPort2Id: getSerializedPortId(solver, toPortId),
+          connectionId: getSerializedConnectionId(solver, routeId),
+        }),
+      )
+
+      return {
+        regionId: getSerializedRegionId(solver, regionId),
+        pointIds: topology.regionIncidentPorts[regionId]!.map((portId) =>
+          getSerializedPortId(solver, portId),
+        ),
+        d: getSerializedRegionData(solver, regionId),
+        ...(assignments.length > 0 && { assignments }),
+      }
+    },
   )
 
   const ports = Array.from({ length: topology.portCount }, (_, portId) => {
@@ -440,45 +438,11 @@ export const convertToSerializedHyperGraph = (
   const serializedRoutes = routeSegmentsByRoute.map((routeSegments, routeId) =>
     getSerializedSolvedRoute(solver, routeId, routeSegments),
   )
-  const fixedOccupancy = solver.problem.fixedOccupancy
-    ? {
-        ...(solver.problem.fixedOccupancy.portReservations && {
-          portReservations: solver.problem.fixedOccupancy.portReservations.map(
-            (reservation) => ({
-              portId: getSerializedPortId(solver, reservation.portId),
-              networkId: getSerializedNetworkId(
-                solver,
-                reservation.netId,
-                reservation.networkId,
-              ),
-              ...(reservation.metadata !== undefined && {
-                d: reservation.metadata,
-              }),
-            }),
-          ),
-        }),
-        ...(solver.problem.fixedOccupancy.segments && {
-          segments: solver.problem.fixedOccupancy.segments.map((segment) => ({
-            regionId: getSerializedRegionId(solver, segment.regionId),
-            fromPortId: getSerializedPortId(solver, segment.fromPortId),
-            toPortId: getSerializedPortId(solver, segment.toPortId),
-            networkId: getSerializedNetworkId(
-              solver,
-              segment.netId,
-              segment.networkId,
-            ),
-            ...(segment.geometry && { geometry: segment.geometry }),
-            ...(segment.metadata !== undefined && { d: segment.metadata }),
-          })),
-        }),
-      }
-    : undefined
 
   return {
     regions,
     ports,
     connections: serializedRoutes.map(({ connection }) => connection),
     solvedRoutes: serializedRoutes.map(({ solvedRoute }) => solvedRoute),
-    ...(fixedOccupancy && { fixedOccupancy }),
   }
 }

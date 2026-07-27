@@ -27,42 +27,33 @@ if (!solver.solved || solver.failed) {
 const solvedGraph = solver.getOutput()
 ```
 
-### Route around immutable existing traces
-
-Add existing trace occupancy to the serialized graph. Its region and port ids
-are resolved onto the existing topology; no capacity regions or ports are
-created.
+Existing routing can be preloaded through the standard region assignments:
 
 ```ts
-const inputGraph = {
-  ...serializedHyperGraph,
-  fixedOccupancy: {
-    segments: [
-      {
-        regionId: "region-12",
-        fromPortId: "port-8",
-        toPortId: "port-11",
-        networkId: "GND",
-        geometry: {
-          start: { x: 2.1, y: 4.8 },
-          end: { x: 3.4, y: 4.8 },
+const inputGraph: SerializedHyperGraph = {
+  regions: [
+    {
+      regionId: "middle",
+      pointIds: ["left-port", "right-port"],
+      assignments: [
+        {
+          regionPort1Id: "left-port",
+          regionPort2Id: "right-port",
+          connectionId: "trace-1",
         },
-      },
-    ],
-  },
+      ],
+      d: {},
+    },
+  ],
+  ports,
+  connections,
 }
-
-const { topology, problem } = loadSerializedHyperGraph(inputGraph)
 ```
 
-Fixed segment endpoints are reserved for their net automatically. Optional
-physical geometry makes same-layer collision checks exact when port
-quantization does not capture a crossing or overlap. Fixed occupancy survives
-rerips and section optimization, appears in iteration-zero visualization, and
-is not emitted as a newly solved route.
-
-`TinyHyperGraphSectionPipelineSolver` reads `fixedOccupancy` from its
-`serializedHyperGraph` input and preserves it in solved output.
+The assignments seed regular route-owned solver state. They reserve their
+existing ports and contribute to region congestion immediately, but remain
+eligible for the normal rip-and-reroute process. They do not create regions or
+otherwise change the hypergraph topology.
 
 ### Export a solved solver back to `SerializedHyperGraph`
 
@@ -73,6 +64,7 @@ Under the hood it uses
 `lib/compat/convertToSerializedHyperGraph.ts`, which reconstructs:
 
 - `regions`
+- region `assignments`
 - `ports`
 - `connections`
 - `solvedRoutes`

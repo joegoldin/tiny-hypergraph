@@ -1,12 +1,10 @@
 import type { SerializedHyperGraph } from "@tscircuit/hypergraph"
 import type {
-  TinyHyperGraphFixedOccupancy,
   TinyHyperGraphProblem,
   TinyHyperGraphSolution,
   TinyHyperGraphTopology,
-} from "../core"
+} from "../index"
 import { getAvailableZFromMask, getZLayerLabel } from "../layerLabels"
-import type { SerializedTinyHyperGraph } from "./serializedFixedOccupancy"
 
 const getSerializedRegionNetId = (
   region: SerializedHyperGraph["regions"][number],
@@ -325,7 +323,7 @@ const getSharedPortIdsForConnection = (
     .map((port) => port.portId)
 
 export const loadSerializedHyperGraph = (
-  serializedHyperGraph: SerializedTinyHyperGraph,
+  serializedHyperGraph: SerializedHyperGraph,
 ): {
   topology: TinyHyperGraphTopology
   problem: TinyHyperGraphProblem
@@ -450,19 +448,6 @@ export const loadSerializedHyperGraph = (
     return netIndex
   }
 
-  const registerNetAlias = (alias: unknown, netIndex: number) => {
-    if (typeof alias !== "string" || alias.length === 0) {
-      return
-    }
-    const existingNetIndex = netIdToIndex.get(alias)
-    if (existingNetIndex !== undefined && existingNetIndex !== netIndex) {
-      throw new Error(
-        `Net alias "${alias}" maps to both net ${existingNetIndex} and net ${netIndex}`,
-      )
-    }
-    netIdToIndex.set(alias, netIndex)
-  }
-
   const regionNetCandidates = Array.from(
     { length: regionCount },
     () => new Set<number>(),
@@ -479,24 +464,6 @@ export const loadSerializedHyperGraph = (
 
   connections.forEach((connection) => {
     const netIndex = getNetIndex(connection)
-    const connectionMetadata = connection as typeof connection & {
-      simpleRouteConnection?: {
-        name?: unknown
-        __netConnectionName?: unknown
-        __rootConnectionNames?: unknown[]
-      }
-    }
-    registerNetAlias(connection.connectionId, netIndex)
-    registerNetAlias(connection.mutuallyConnectedNetworkId, netIndex)
-    registerNetAlias(connectionMetadata.simpleRouteConnection?.name, netIndex)
-    registerNetAlias(
-      connectionMetadata.simpleRouteConnection?.__netConnectionName,
-      netIndex,
-    )
-    for (const rootConnectionName of connectionMetadata.simpleRouteConnection
-      ?.__rootConnectionNames ?? []) {
-      registerNetAlias(rootConnectionName, netIndex)
-    }
     assignRegionNet(connection.startRegionId, netIndex)
     assignRegionNet(connection.endRegionId, netIndex)
   })
@@ -531,6 +498,12 @@ export const loadSerializedHyperGraph = (
     )
 
   const routeCount = routableConnections.length
+  const routeIndexByConnectionId = new Map(
+    routableConnections.map(({ connection }, routeIndex) => [
+      connection.connectionId,
+      routeIndex,
+    ]),
+  )
   const portSectionMask = new Int8Array(portCount).fill(1)
   const routeStartPort = new Int32Array(routeCount)
   const routeEndPort = new Int32Array(routeCount)
@@ -591,65 +564,39 @@ export const loadSerializedHyperGraph = (
     portMetadata,
   }
 
-  for (const reservedRegionNetId of regionNetId) {
-    if (reservedRegionNetId >= nextNetIndex) {
-      nextNetIndex = reservedRegionNetId + 1
-    }
-  }
-
-  const getFixedNetIndex = (netId: string) => {
-    let netIndex = netIdToIndex.get(netId)
-    if (netIndex === undefined) {
-      netIndex = nextNetIndex++
-      netIdToIndex.set(netId, netIndex)
-    }
-    return netIndex
-  }
-  const getFixedPortIndex = (portId: string) => {
-    const portIndex = portIdToIndex.get(portId)
-    if (portIndex === undefined) {
-      throw new Error(`Fixed occupancy references missing port "${portId}"`)
-    }
-    return portIndex
-  }
-  const getFixedRegionIndex = (regionId: string) => {
-    const regionIndex = regionIdToIndex.get(regionId)
-    if (regionIndex === undefined) {
-      throw new Error(`Fixed occupancy references missing region "${regionId}"`)
-    }
-    return regionIndex
-  }
-  const fixedOccupancy: TinyHyperGraphFixedOccupancy | undefined =
-    serializedHyperGraph.fixedOccupancy
-      ? {
-          ...(serializedHyperGraph.fixedOccupancy.portReservations && {
-            portReservations:
-              serializedHyperGraph.fixedOccupancy.portReservations.map(
-                (reservation) => ({
-                  portId: getFixedPortIndex(reservation.portId),
-                  netId: getFixedNetIndex(reservation.networkId),
-                  networkId: reservation.networkId,
-                  ...(reservation.d !== undefined && {
-                    metadata: reservation.d,
-                  }),
-                }),
-              ),
-          }),
-          ...(serializedHyperGraph.fixedOccupancy.segments && {
-            segments: serializedHyperGraph.fixedOccupancy.segments.map(
-              (segment) => ({
-                regionId: getFixedRegionIndex(segment.regionId),
-                fromPortId: getFixedPortIndex(segment.fromPortId),
-                toPortId: getFixedPortIndex(segment.toPortId),
-                netId: getFixedNetIndex(segment.networkId),
-                networkId: segment.networkId,
-                ...(segment.geometry && { geometry: segment.geometry }),
-                ...(segment.d !== undefined && { metadata: segment.d }),
-              }),
-            ),
-          }),
+  const initialAssignments = filteredHyperGraph.regions.flatMap(
+    (region, regionIndex) =>
+      (region.assignments ?? []).map((assignment) => {
+        const routeId = routeIndexByConnectionId.get(assignment.connectionId)
+        if (routeId === undefined) {
+          throw new Error(
+            `Region "${region.regionId}" assignment references unknown routable connection "${assignment.connectionId}"`,
+          )
         }
-      : undefined
+        const fromPortId = portIdToIndex.get(assignment.regionPort1Id)
+        const toPortId = portIdToIndex.get(assignment.regionPort2Id)
+        if (fromPortId === undefined || toPortId === undefined) {
+          throw new Error(
+            `Region "${region.regionId}" assignment references missing port "${fromPortId === undefined ? assignment.regionPort1Id : assignment.regionPort2Id}"`,
+          )
+        }
+        if (
+          !regionIncidentPorts[regionIndex]?.includes(fromPortId) ||
+          !regionIncidentPorts[regionIndex]?.includes(toPortId)
+        ) {
+          throw new Error(
+            `Region "${region.regionId}" assignment ports must both belong to the region`,
+          )
+        }
+
+        return {
+          routeId,
+          regionId: regionIndex,
+          fromPortId,
+          toPortId,
+        }
+      }),
+  )
 
   const problem: TinyHyperGraphProblem = {
     routeCount,
@@ -659,7 +606,7 @@ export const loadSerializedHyperGraph = (
     routeEndPort,
     routeNet,
     regionNetId,
-    fixedOccupancy,
+    ...(initialAssignments.length > 0 && { initialAssignments }),
   }
 
   const solvedRoutePathSegments: TinyHyperGraphSolution["solvedRoutePathSegments"] =

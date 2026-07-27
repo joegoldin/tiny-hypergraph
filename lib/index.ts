@@ -14,12 +14,6 @@ export {
 export { convertPortPointPathingSolverInputToSerializedHyperGraph } from "./compat/convertPortPointPathingSolverInputToSerializedHyperGraph"
 export { loadSerializedHyperGraph } from "./compat/loadSerializedHyperGraph"
 export {
-  type SerializedTinyHyperGraph,
-  type SerializedTinyHyperGraphFixedOccupancy,
-  type SerializedTinyHyperGraphFixedPortReservation,
-  type SerializedTinyHyperGraphFixedSegment,
-} from "./compat/serializedFixedOccupancy"
-export {
   TinyHyperGraphSectionSolver,
   type TinyHyperGraphSectionSolverOptions,
 } from "./section-solver"

@@ -3,10 +3,6 @@ import { BasePipelineSolver, type PipelineStep } from "@tscircuit/solver-utils"
 import type { GraphicsObject } from "graphics-debug"
 import { loadSerializedHyperGraph } from "../compat/loadSerializedHyperGraph"
 import type {
-  SerializedTinyHyperGraph,
-  SerializedTinyHyperGraphFixedOccupancy,
-} from "../compat/serializedFixedOccupancy"
-import type {
   TinyHyperGraphProblem,
   TinyHyperGraphSolution,
   TinyHyperGraphSolverOptions,
@@ -77,12 +73,8 @@ const getMaxRegionCost = (solver: TinyHyperGraphSolver) =>
 const getSerializedOutputMaxRegionCost = (
   serializedHyperGraph: SerializedHyperGraph,
   sectionSolverOptions?: TinyHyperGraphSectionSolverOptions,
-  fixedOccupancy?: SerializedTinyHyperGraphFixedOccupancy,
 ) => {
-  const replay = loadSerializedHyperGraph({
-    ...serializedHyperGraph,
-    ...(fixedOccupancy && { fixedOccupancy }),
-  })
+  const replay = loadSerializedHyperGraph(serializedHyperGraph)
   const replayedSolver = new TinyHyperGraphSectionSolver(
     replay.topology,
     replay.problem,
@@ -135,7 +127,6 @@ const createProblemWithPortSectionMask = (
     problem.portPenalty === undefined
       ? undefined
       : new Float64Array(problem.portPenalty),
-  fixedOccupancy: problem.fixedOccupancy,
 })
 
 const getSectionMaskCandidates = (
@@ -168,7 +159,6 @@ const findBestAutomaticSectionMask = (
   solution: TinyHyperGraphSolution,
   searchConfig: TinyHyperGraphSectionPipelineSearchConfig | undefined,
   sectionSolverOptions: TinyHyperGraphSectionSolverOptions,
-  fixedOccupancy?: SerializedTinyHyperGraphFixedOccupancy,
 ): AutomaticSectionSearchResult => {
   const searchStartTime = performance.now()
   const baselineEvaluationStartTime = performance.now()
@@ -268,7 +258,6 @@ const findBestAutomaticSectionMask = (
         const replayedFinalMaxRegionCost = getSerializedOutputMaxRegionCost(
           sectionSolver.getOutput(),
           sectionSolverOptions,
-          fixedOccupancy,
         )
         candidateReplayScoreMs +=
           performance.now() - candidateReplayScoreStartTime
@@ -321,7 +310,7 @@ export interface TinyHyperGraphSectionPipelineSearchConfig {
 }
 
 export interface TinyHyperGraphSectionPipelineInput {
-  serializedHyperGraph: SerializedTinyHyperGraph
+  serializedHyperGraph: SerializedHyperGraph
   minViaPadDiameter?: number
   createSectionMask?: (context: TinyHyperGraphSectionMaskContext) => Int8Array
   solveGraphOptions?: TinyHyperGraphSolverOptions
@@ -345,13 +334,7 @@ export class TinyHyperGraphSectionPipelineSolver extends BasePipelineSolver<Tiny
     problem: TinyHyperGraphProblem
     solution: TinyHyperGraphSolution
   } {
-    const fixedOccupancy =
-      (serializedHyperGraph as SerializedTinyHyperGraph).fixedOccupancy ??
-      this.inputProblem.serializedHyperGraph.fixedOccupancy
-    return loadSerializedHyperGraph({
-      ...serializedHyperGraph,
-      ...(fixedOccupancy && { fixedOccupancy }),
-    })
+    return loadSerializedHyperGraph(serializedHyperGraph)
   }
 
   getSolveGraphOptions(): TinyHyperGraphSolverOptions {
@@ -441,7 +424,6 @@ export class TinyHyperGraphSectionPipelineSolver extends BasePipelineSolver<Tiny
             solution,
             this.inputProblem.sectionSearchConfig,
             sectionSolverOptions,
-            this.inputProblem.serializedHyperGraph.fixedOccupancy,
           )
 
           this.selectedSectionCandidateLabel =
