@@ -1,10 +1,37 @@
 import type { SerializedHyperGraph } from "@tscircuit/hypergraph"
 import type {
+  TinyHyperGraphFixedOccupancy,
   TinyHyperGraphProblem,
   TinyHyperGraphSolution,
   TinyHyperGraphTopology,
-} from "../index"
+} from "../core"
 import { getAvailableZFromMask, getZLayerLabel } from "../layerLabels"
+
+export interface SerializedTinyHyperGraphFixedPortReservation {
+  portId: string
+  netId: string
+}
+
+export interface SerializedTinyHyperGraphFixedSegment {
+  regionId: string
+  fromPortId: string
+  toPortId: string
+  netId: string
+  geometry?: {
+    start: { x: number; y: number }
+    end: { x: number; y: number }
+  }
+  metadata?: unknown
+}
+
+export interface SerializedTinyHyperGraphFixedOccupancy {
+  portReservations?: SerializedTinyHyperGraphFixedPortReservation[]
+  segments?: SerializedTinyHyperGraphFixedSegment[]
+}
+
+export interface LoadSerializedHyperGraphOptions {
+  fixedOccupancy?: SerializedTinyHyperGraphFixedOccupancy
+}
 
 const getSerializedRegionNetId = (
   region: SerializedHyperGraph["regions"][number],
@@ -324,6 +351,7 @@ const getSharedPortIdsForConnection = (
 
 export const loadSerializedHyperGraph = (
   serializedHyperGraph: SerializedHyperGraph,
+  options: LoadSerializedHyperGraphOptions = {},
 ): {
   topology: TinyHyperGraphTopology
   problem: TinyHyperGraphProblem
@@ -448,6 +476,19 @@ export const loadSerializedHyperGraph = (
     return netIndex
   }
 
+  const registerNetAlias = (alias: unknown, netIndex: number) => {
+    if (typeof alias !== "string" || alias.length === 0) {
+      return
+    }
+    const existingNetIndex = netIdToIndex.get(alias)
+    if (existingNetIndex !== undefined && existingNetIndex !== netIndex) {
+      throw new Error(
+        `Net alias "${alias}" maps to both net ${existingNetIndex} and net ${netIndex}`,
+      )
+    }
+    netIdToIndex.set(alias, netIndex)
+  }
+
   const regionNetCandidates = Array.from(
     { length: regionCount },
     () => new Set<number>(),
@@ -464,6 +505,24 @@ export const loadSerializedHyperGraph = (
 
   connections.forEach((connection) => {
     const netIndex = getNetIndex(connection)
+    const connectionMetadata = connection as typeof connection & {
+      simpleRouteConnection?: {
+        name?: unknown
+        __netConnectionName?: unknown
+        __rootConnectionNames?: unknown[]
+      }
+    }
+    registerNetAlias(connection.connectionId, netIndex)
+    registerNetAlias(connection.mutuallyConnectedNetworkId, netIndex)
+    registerNetAlias(connectionMetadata.simpleRouteConnection?.name, netIndex)
+    registerNetAlias(
+      connectionMetadata.simpleRouteConnection?.__netConnectionName,
+      netIndex,
+    )
+    for (const rootConnectionName of connectionMetadata.simpleRouteConnection
+      ?.__rootConnectionNames ?? []) {
+      registerNetAlias(rootConnectionName, netIndex)
+    }
     assignRegionNet(connection.startRegionId, netIndex)
     assignRegionNet(connection.endRegionId, netIndex)
   })
@@ -558,6 +617,54 @@ export const loadSerializedHyperGraph = (
     portMetadata,
   }
 
+  for (const reservedRegionNetId of regionNetId) {
+    if (reservedRegionNetId >= nextNetIndex) {
+      nextNetIndex = reservedRegionNetId + 1
+    }
+  }
+
+  const getFixedNetIndex = (netId: string) => {
+    let netIndex = netIdToIndex.get(netId)
+    if (netIndex === undefined) {
+      netIndex = nextNetIndex++
+      netIdToIndex.set(netId, netIndex)
+    }
+    return netIndex
+  }
+  const getFixedPortIndex = (portId: string) => {
+    const portIndex = portIdToIndex.get(portId)
+    if (portIndex === undefined) {
+      throw new Error(`Fixed occupancy references missing port "${portId}"`)
+    }
+    return portIndex
+  }
+  const getFixedRegionIndex = (regionId: string) => {
+    const regionIndex = regionIdToIndex.get(regionId)
+    if (regionIndex === undefined) {
+      throw new Error(`Fixed occupancy references missing region "${regionId}"`)
+    }
+    return regionIndex
+  }
+  const fixedOccupancy: TinyHyperGraphFixedOccupancy | undefined =
+    options.fixedOccupancy
+      ? {
+          portReservations: (options.fixedOccupancy.portReservations ?? []).map(
+            (reservation) => ({
+              portId: getFixedPortIndex(reservation.portId),
+              netId: getFixedNetIndex(reservation.netId),
+            }),
+          ),
+          segments: (options.fixedOccupancy.segments ?? []).map((segment) => ({
+            regionId: getFixedRegionIndex(segment.regionId),
+            fromPortId: getFixedPortIndex(segment.fromPortId),
+            toPortId: getFixedPortIndex(segment.toPortId),
+            netId: getFixedNetIndex(segment.netId),
+            geometry: segment.geometry,
+            metadata: segment.metadata,
+          })),
+        }
+      : undefined
+
   const problem: TinyHyperGraphProblem = {
     routeCount,
     portSectionMask,
@@ -566,6 +673,7 @@ export const loadSerializedHyperGraph = (
     routeEndPort,
     routeNet,
     regionNetId,
+    fixedOccupancy,
   }
 
   const solvedRoutePathSegments: TinyHyperGraphSolution["solvedRoutePathSegments"] =

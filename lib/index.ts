@@ -13,6 +13,13 @@ export {
 } from "./computeRegionCost"
 export { convertPortPointPathingSolverInputToSerializedHyperGraph } from "./compat/convertPortPointPathingSolverInputToSerializedHyperGraph"
 export {
+  loadSerializedHyperGraph,
+  type LoadSerializedHyperGraphOptions,
+  type SerializedTinyHyperGraphFixedOccupancy,
+  type SerializedTinyHyperGraphFixedPortReservation,
+  type SerializedTinyHyperGraphFixedSegment,
+} from "./compat/loadSerializedHyperGraph"
+export {
   TinyHyperGraphSectionSolver,
   type TinyHyperGraphSectionSolverOptions,
 } from "./section-solver"

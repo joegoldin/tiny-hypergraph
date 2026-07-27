@@ -27,6 +27,40 @@ if (!solver.solved || solver.failed) {
 const solvedGraph = solver.getOutput()
 ```
 
+### Route around immutable existing traces
+
+Pass existing trace occupancy separately from the serialized graph. Its
+region and port ids are resolved onto the existing topology; no capacity
+regions or ports are created.
+
+```ts
+const { topology, problem } = loadSerializedHyperGraph(inputGraph, {
+  fixedOccupancy: {
+    segments: [
+      {
+        regionId: "region-12",
+        fromPortId: "port-8",
+        toPortId: "port-11",
+        netId: "GND",
+        geometry: {
+          start: { x: 2.1, y: 4.8 },
+          end: { x: 3.4, y: 4.8 },
+        },
+      },
+    ],
+  },
+})
+```
+
+Fixed segment endpoints are reserved for their net automatically. Optional
+physical geometry makes same-layer collision checks exact when port
+quantization does not capture a crossing or overlap. Fixed occupancy survives
+rerips and section optimization, appears in iteration-zero visualization, and
+is not emitted as a newly solved route.
+
+`TinyHyperGraphSectionPipelineSolver` accepts the same `fixedOccupancy` value
+directly in its input.
+
 ### Export a solved solver back to `SerializedHyperGraph`
 
 `solver.getOutput()` now returns a `SerializedHyperGraph` for a solved

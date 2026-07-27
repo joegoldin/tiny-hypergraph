@@ -393,6 +393,16 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       ) {
         continue
       }
+      if (
+        this.isHopBlockedByFixedOccupancy(
+          state.nextRegionId,
+          state.portId,
+          neighborPortId,
+          routeNetId,
+        )
+      ) {
+        continue
+      }
 
       const resources = this.getHopBlockerResources({
         regionId: state.nextRegionId,
@@ -538,40 +548,16 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     secondFromPortId: PortId,
     secondToPortId: PortId,
   ): boolean {
-    const first = {
-      ...this.populateSegmentGeometryScratch(
-        regionId,
-        firstFromPortId,
-        firstToPortId,
-      ),
-    }
-    const second = {
-      ...this.populateSegmentGeometryScratch(
-        regionId,
-        secondFromPortId,
-        secondToPortId,
-      ),
-    }
-    if ((first.layerMask & second.layerMask) === 0) return false
-    if (
-      first.lesserAngle === second.lesserAngle ||
-      first.lesserAngle === second.greaterAngle ||
-      first.greaterAngle === second.lesserAngle ||
-      first.greaterAngle === second.greaterAngle
-    ) {
-      return false
-    }
-
-    const secondLesserInsideFirst =
-      first.lesserAngle < second.lesserAngle &&
-      second.lesserAngle < first.greaterAngle
-    const secondGreaterInsideFirst =
-      first.lesserAngle < second.greaterAngle &&
-      second.greaterAngle < first.greaterAngle
-    return secondLesserInsideFirst !== secondGreaterInsideFirst
+    return this.segmentsCrossTopologically(
+      regionId,
+      firstFromPortId,
+      firstToPortId,
+      secondFromPortId,
+      secondToPortId,
+    )
   }
 
-  private rebuildCommittedState(rippedRouteIds: ReadonlySet<RouteId>): void {
+  protected rebuildCommittedState(rippedRouteIds: ReadonlySet<RouteId>): void {
     this.state.regionSegments = this.state.regionSegments.map((segments) =>
       segments.filter(([routeId]) => !rippedRouteIds.has(routeId)),
     )
@@ -580,6 +566,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       { length: this.topology.regionCount },
       () => createEmptyRegionIntersectionCache(),
     )
+    this.applyFixedOccupancyToRoutingState()
 
     for (
       let regionId = 0;

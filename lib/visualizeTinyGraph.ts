@@ -9,6 +9,7 @@ import {
 
 const BOTTOM_LAYER_TRACE_COLOR = "rgba(52, 152, 219, 0.95)"
 const BOTTOM_LAYER_TRACE_DASH = "3 2"
+const FIXED_TOP_LAYER_TRACE_COLOR = "rgba(220, 38, 38, 0.95)"
 const TRANSITION_CROSSING_COLOR = "rgba(22, 160, 133, 0.95)"
 const TRANSITION_CROSSING_DASH = "2 4 2"
 const REGION_RECT_GAP = 0.05
@@ -326,6 +327,9 @@ const getPortNetLabel = (
   }
 
   const netIds = new Set<number>()
+  for (const netId of solver.problemSetup.portEndpointNetIds[portId] ?? []) {
+    netIds.add(netId)
+  }
   for (
     let candidateRouteId = 0;
     candidateRouteId < solver.problem.routeCount;
@@ -491,6 +495,44 @@ const pushSolvedRegionSegments = (
         ...getSegmentStyle(solver, routeId, port1Id, port2Id),
       })
     }
+  }
+}
+
+const pushFixedOccupancy = (
+  solver: TinyHyperGraphSolver,
+  graphics: Required<GraphicsObject>,
+) => {
+  for (const segment of solver.problem.fixedOccupancy?.segments ?? []) {
+    const fromZ = solver.topology.portZ[segment.fromPortId]
+    const toZ = solver.topology.portZ[segment.toPortId]
+    const isTransition = fromZ !== toZ
+    const isBottom = !isTransition && fromZ > 0
+
+    graphics.lines.push({
+      points: segment.geometry
+        ? [segment.geometry.start, segment.geometry.end]
+        : [
+            getPortRenderPoint(solver, segment.fromPortId),
+            getPortRenderPoint(solver, segment.toPortId),
+          ],
+      strokeColor: isTransition
+        ? TRANSITION_CROSSING_COLOR
+        : isBottom
+          ? BOTTOM_LAYER_TRACE_COLOR
+          : FIXED_TOP_LAYER_TRACE_COLOR,
+      strokeDash: isTransition
+        ? TRANSITION_CROSSING_DASH
+        : isBottom
+          ? BOTTOM_LAYER_TRACE_DASH
+          : undefined,
+      layer: getZLayerLabel(isTransition ? [fromZ, toZ] : [fromZ]),
+      label: formatLabel(
+        "fixed occupancy",
+        `net: ${segment.netId}`,
+        `region: region-${segment.regionId}`,
+        getPortPairZLabel(solver, segment.fromPortId, segment.toPortId),
+      ),
+    })
   }
 }
 
@@ -928,6 +970,7 @@ export const visualizeTinyHyperGraph = (
   }
 
   pushRouteEndpoints(solver, graphics, staticallyUnroutableRouteIds)
+  pushFixedOccupancy(solver, graphics)
 
   if (solver.iterations === 0) {
     for (const polygon of graphics.polygons) {

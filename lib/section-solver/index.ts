@@ -2,7 +2,6 @@ import { BaseSolver } from "@tscircuit/solver-utils"
 import type { GraphicsObject } from "graphics-debug"
 import {
   applyTinyHyperGraphSolverOptions,
-  createEmptyRegionIntersectionCache,
   getTinyHyperGraphSolverOptions,
   type RegionCostSummary,
   TinyHyperGraphSolver,
@@ -347,21 +346,10 @@ const applyRouteSegmentsToSolver = (
   solver: TinyHyperGraphSolver,
   routeSegmentsByRegion: Array<[RouteId, PortId, PortId][]>,
 ) => {
-  solver.state.portAssignment.fill(-1)
-  solver.state.regionSegments = Array.from(
-    { length: solver.topology.regionCount },
-    () => [],
-  )
-  solver.state.regionIntersectionCaches = Array.from(
-    { length: solver.topology.regionCount },
-    () => createEmptyRegionIntersectionCache(),
-  )
+  solver.resetRoutingStateForRerip()
   solver.state.currentRouteId = undefined
   solver.state.currentRouteNetId = undefined
   solver.state.unroutedRoutes = []
-  solver.state.candidateQueue.clear()
-  solver.resetCandidateBestCosts()
-  solver.state.goalPortId = -1
   solver.state.ripCount = 0
   solver.state.regionCongestionCost.fill(0)
 
@@ -555,6 +543,7 @@ const createSectionRoutePlans = (
         problem.portPenalty === undefined
           ? undefined
           : new Float64Array(problem.portPenalty),
+      fixedOccupancy: problem.fixedOccupancy,
     },
     routePlans,
     activeRouteIds,
