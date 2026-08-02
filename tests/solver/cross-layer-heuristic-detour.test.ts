@@ -174,7 +174,7 @@ const createCrossLayerDetourTopology = (): TinyHyperGraphTopology => {
         portId: FIRST_INTERMEDIATE_LAYER_DISTRACTOR_PORT + index,
         region1Id: VIA_REGION,
         region2Id: FIRST_INTERMEDIATE_LAYER_DISTRACTOR_REGION + index,
-        x: 2.5,
+        x: 2.4,
         y: -0.6 + index * 0.08,
         z: 1 + (index % 4),
       },
