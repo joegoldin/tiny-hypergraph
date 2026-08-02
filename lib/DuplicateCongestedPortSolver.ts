@@ -158,9 +158,9 @@ const getPhysicalLanePoints = ({
   requestedLaneCount: number
   minimumSpacing: number
   laneWidth: number
-}): Point[] => {
+}): Point[] | undefined => {
   const boundary = getSharedBoundaryInterval(sourcePort, regionById)
-  if (!boundary) return [getPortPoint(sourcePort)]
+  if (!boundary) return undefined
 
   const sourceCoordinate = getCoordinateOnBoundary(sourcePort, boundary.axis)
   const otherCoordinates = portsOnBoundary
@@ -562,10 +562,14 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
               laneWidth: duplicatePortWidth,
             })
       const availableLaneCount = physicalLanePoints?.length
-      const duplicateCount = Math.max(
-        0,
-        Math.min(useCount, availableLaneCount ?? useCount) - 1,
-      )
+      const capacityIsInsufficient =
+        availableLaneCount !== undefined && availableLaneCount < useCount
+      const capacityLimitedLanePoints = capacityIsInsufficient
+        ? physicalLanePoints
+        : undefined
+      const duplicateCount = capacityIsInsufficient
+        ? Math.max(0, availableLaneCount - 1)
+        : useCount - 1
       const nearestBoundaryPort = findNearestPortOnSameBoundary(
         sourcePort,
         this.serializedHyperGraph.ports,
@@ -576,10 +580,10 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
         regionById,
       )
       const sourcePoint = getPortPoint(sourcePort)
-      if (physicalLanePoints?.[0]) {
+      if (capacityLimitedLanePoints?.[0]) {
         const sourcePortData = toObjectRecord(sourcePort.d)
-        sourcePortData.x = physicalLanePoints[0].x
-        sourcePortData.y = physicalLanePoints[0].y
+        sourcePortData.x = capacityLimitedLanePoints[0].x
+        sourcePortData.y = capacityLimitedLanePoints[0].y
         sourcePort.d = sourcePortData
       }
       const duplicatePortIds: string[] = []
@@ -596,7 +600,7 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
         )
         const offset =
           (duplicatePortProximity * duplicateIndex) / (duplicateCount + 1)
-        const duplicatePoint = physicalLanePoints?.[duplicateIndex] ?? {
+        const duplicatePoint = capacityLimitedLanePoints?.[duplicateIndex] ?? {
           x: sourcePoint.x + duplicateDirection.x * offset,
           y: sourcePoint.y + duplicateDirection.y * offset,
         }
@@ -609,7 +613,7 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
         duplicatedPortData.duplicateIndex = duplicateIndex
         duplicatedPortData.duplicatePortUseCount = useCount
         duplicatedPortData.duplicatePortProximity = duplicatePortProximity
-        if (minimumDuplicatePortSpacing !== undefined) {
+        if (capacityIsInsufficient) {
           duplicatedPortData.minimumDuplicatePortSpacing =
             minimumDuplicatePortSpacing
           duplicatedPortData.duplicatePortWidth = duplicatePortWidth
