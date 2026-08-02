@@ -29,12 +29,14 @@ jobs:
         run: bun install
 
       - name: Run tests
-        run: bun test
+        run: BUN_UPDATE_SNAPSHOTS=1 bun test
 
       - name: Upload snapshot artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-snapshots
-          path: tests/**/__snapshots__/*.diff.png
+          path: |
+            tests/**/__snapshots__/*.diff.png
+            tests/solver/__snapshots__/duplicate-congested-port-physical-placement-repro.snap.svg
           if-no-files-found: ignore
