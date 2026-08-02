@@ -93,8 +93,8 @@ const createCrossLayerDetourTopology = (): TinyHyperGraphTopology => {
   connectCrossLayerDetourPort(
     {
       portId: START_PORT,
-      region1Id: START_TERMINAL_REGION,
-      region2Id: TOP_HUB_REGION,
+      region1Id: TOP_HUB_REGION,
+      region2Id: START_TERMINAL_REGION,
       x: -0.5,
       y: 0,
       z: 0,
