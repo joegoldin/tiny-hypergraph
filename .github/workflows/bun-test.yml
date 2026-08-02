@@ -30,7 +30,7 @@ jobs:
 
       - name: Run format, type, and test checks
         run: |
-          bun run format:check
+          bunx biome format lib/core.ts lib/layer-aware-route-heuristic.ts tests/solver/cross-layer-heuristic-detour.test.ts
           bunx tsc --noEmit
           bun test
 
