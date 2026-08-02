@@ -10,7 +10,7 @@ import {
   type TinyHyperGraphTopology,
 } from "lib/index"
 
-const DISTRACTOR_COUNT = 12
+const DISTRACTOR_COUNT = 8
 const START_TERMINAL_REGION = 0
 const TOP_HUB_REGION = 1
 const FIRST_DISTRACTOR_REGION = 2
@@ -120,7 +120,7 @@ const createCrossLayerDetourTopology = (): TinyHyperGraphTopology => {
         region1Id: TOP_HUB_REGION,
         region2Id: FIRST_DISTRACTOR_REGION + index,
         x: 0,
-        y: -0.55 + index * 0.1,
+        y: -0.56 + index * 0.16,
         z: 0,
       },
       topologyDraft,
@@ -132,7 +132,7 @@ const createCrossLayerDetourTopology = (): TinyHyperGraphTopology => {
       portId: FIRST_CORRIDOR_PORT,
       region1Id: TOP_HUB_REGION,
       region2Id: FIRST_CORRIDOR_REGION,
-      x: 1,
+      x: 0.8,
       y: 0,
       z: 0,
     },
@@ -143,7 +143,7 @@ const createCrossLayerDetourTopology = (): TinyHyperGraphTopology => {
       portId: SECOND_CORRIDOR_PORT,
       region1Id: FIRST_CORRIDOR_REGION,
       region2Id: SECOND_CORRIDOR_REGION,
-      x: 3,
+      x: 1.6,
       y: 0,
       z: 0,
     },
@@ -154,7 +154,7 @@ const createCrossLayerDetourTopology = (): TinyHyperGraphTopology => {
       portId: VIA_ENTRY_PORT,
       region1Id: SECOND_CORRIDOR_REGION,
       region2Id: VIA_REGION,
-      x: 5.5,
+      x: 2.5,
       y: 0,
       z: 0,
     },
@@ -165,7 +165,7 @@ const createCrossLayerDetourTopology = (): TinyHyperGraphTopology => {
       portId: VIA_EXIT_PORT,
       region1Id: VIA_REGION,
       region2Id: FOURTH_CORRIDOR_REGION,
-      x: 5.5,
+      x: 2.5,
       y: 0,
       z: 1,
     },
@@ -176,7 +176,7 @@ const createCrossLayerDetourTopology = (): TinyHyperGraphTopology => {
       portId: FOURTH_CORRIDOR_PORT,
       region1Id: FOURTH_CORRIDOR_REGION,
       region2Id: FIFTH_CORRIDOR_REGION,
-      x: 3,
+      x: 1.6,
       y: 0,
       z: 1,
     },
@@ -187,7 +187,7 @@ const createCrossLayerDetourTopology = (): TinyHyperGraphTopology => {
       portId: FIFTH_CORRIDOR_PORT,
       region1Id: FIFTH_CORRIDOR_REGION,
       region2Id: BOTTOM_HUB_REGION,
-      x: 1,
+      x: 0.8,
       y: 0,
       z: 1,
     },
@@ -208,19 +208,19 @@ const createCrossLayerDetourTopology = (): TinyHyperGraphTopology => {
   for (let index = 0; index < DISTRACTOR_COUNT; index++) {
     const regionId = FIRST_DISTRACTOR_REGION + index
     regionCenterX[regionId] = 0
-    regionCenterY[regionId] = -0.55 + index * 0.1
+    regionCenterY[regionId] = -0.56 + index * 0.16
     regionWidth[regionId] = 0.2
-    regionHeight[regionId] = 0.08
+    regionHeight[regionId] = 0.1
   }
 
-  regionCenterX[FIRST_CORRIDOR_REGION] = 2
-  regionCenterX[SECOND_CORRIDOR_REGION] = 4.25
-  regionCenterX[VIA_REGION] = 5.5
+  regionCenterX[FIRST_CORRIDOR_REGION] = 1.2
+  regionCenterX[SECOND_CORRIDOR_REGION] = 2.05
+  regionCenterX[VIA_REGION] = 2.5
   regionWidth[VIA_REGION] = 1
   regionHeight[VIA_REGION] = 1
   regionAvailableZMask[VIA_REGION] = 3
-  regionCenterX[FOURTH_CORRIDOR_REGION] = 4.25
-  regionCenterX[FIFTH_CORRIDOR_REGION] = 2
+  regionCenterX[FOURTH_CORRIDOR_REGION] = 2.05
+  regionCenterX[FIFTH_CORRIDOR_REGION] = 1.2
   regionCenterX[BOTTOM_HUB_REGION] = 0.25
   regionCenterX[GOAL_TERMINAL_REGION] = -1
   regionAvailableZMask[FOURTH_CORRIDOR_REGION] = 2
@@ -283,7 +283,7 @@ test("cross-layer search finds the legal layer-change detour", () => {
     {
       ACCEPT_BEST_SOLUTION_ON_TIMEOUT: false,
       GREEDY_FINAL_ROUTE_ITERS: 0,
-      MAX_ITERATIONS: 12,
+      MAX_ITERATIONS: 10,
       RIP_THRESHOLD_START: 1,
       STATIC_REACHABILITY_PRECHECK: false,
     },
