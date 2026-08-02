@@ -31,13 +31,13 @@ const createFixture = (): SerializedHyperGraph => ({
   regions: [
     createRegion("start-a", { x: -4, y: 0 }, 2, 2, ["start-a-port"]),
     createRegion("start-b", { x: -4, y: -0.2 }, 2, 2, ["start-b-port"]),
-    createRegion("left", { x: -1, y: 0 }, 4, 10, [
+    createRegion("left", { x: -1, y: 0 }, 2, 10, [
       "start-a-port",
       "start-b-port",
       "shared",
       "neighbor",
     ]),
-    createRegion("right", { x: 1, y: 0 }, 4, 10, [
+    createRegion("right", { x: 1, y: 0 }, 2, 10, [
       "shared",
       "neighbor",
       "end-a-port",

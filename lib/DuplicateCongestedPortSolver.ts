@@ -174,20 +174,18 @@ const getPhysicalLanePoints = ({
   const nextCoordinate = otherCoordinates.find(
     (coordinate) => coordinate > sourceCoordinate,
   )
-  const cellMin = Math.max(
-    boundary.min,
+  const usableMin = Math.max(
+    boundary.min + laneWidth / 2,
     previousCoordinate === undefined
-      ? boundary.min
-      : (previousCoordinate + sourceCoordinate) / 2,
+      ? boundary.min + laneWidth / 2
+      : previousCoordinate + minimumSpacing,
   )
-  const cellMax = Math.min(
-    boundary.max,
+  const usableMax = Math.min(
+    boundary.max - laneWidth / 2,
     nextCoordinate === undefined
-      ? boundary.max
-      : (sourceCoordinate + nextCoordinate) / 2,
+      ? boundary.max - laneWidth / 2
+      : nextCoordinate - minimumSpacing,
   )
-  const usableMin = cellMin + laneWidth / 2
-  const usableMax = cellMax - laneWidth / 2
   if (usableMax < usableMin - EPSILON) return []
 
   const availableLaneCount =
