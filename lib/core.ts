@@ -1561,8 +1561,11 @@ export class TinyHyperGraphSolver extends BaseSolver {
 class GreedyFinalRouteSolver extends TinyHyperGraphSolver {
   override computeG(
     currentCandidate: Candidate,
-    _neighborPortId: PortId,
+    neighborPortId: PortId,
   ): number {
-    return currentCandidate.g
+    const constrainedCost = super.computeG(currentCandidate, neighborPortId)
+    return Number.isFinite(constrainedCost)
+      ? currentCandidate.g
+      : constrainedCost
   }
 }
