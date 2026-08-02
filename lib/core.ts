@@ -502,13 +502,14 @@ export class TinyHyperGraphSolver extends BaseSolver {
       const endPortId = problem.routeEndPort[routeId]!
 
       if (topology.portZ[startPortId] !== topology.portZ[endPortId]) {
-        directedHopCountToEndByRoute[routeId] =
-          createDirectedRouteHopHeuristic({
+        directedHopCountToEndByRoute[routeId] = createDirectedRouteHopHeuristic(
+          {
             topology,
             problem,
             portEndpointReservationNetId,
             routeId,
-          })
+          },
+        )
       }
 
       if (portHCostToEndOfRoute) {

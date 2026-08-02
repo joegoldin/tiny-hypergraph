@@ -66,11 +66,7 @@ export const createDirectedRouteHopHeuristic = ({
     nextRegionId: RegionId,
     hopCount: number,
   ) => {
-    const directedHopIndex = getDirectedHopIndex(
-      topology,
-      portId,
-      nextRegionId,
-    )
+    const directedHopIndex = getDirectedHopIndex(topology, portId, nextRegionId)
     if (
       directedHopIndex === -1 ||
       hopCountToGoal[directedHopIndex] !== UNREACHABLE_HOP_COUNT
@@ -145,11 +141,7 @@ export const getDirectedRouteHopCount = (
   portId: PortId,
   nextRegionId: RegionId,
 ) => {
-  const directedHopIndex = getDirectedHopIndex(
-    topology,
-    portId,
-    nextRegionId,
-  )
+  const directedHopIndex = getDirectedHopIndex(topology, portId, nextRegionId)
   return directedHopIndex === -1
     ? UNREACHABLE_HOP_COUNT
     : hopCountToGoal[directedHopIndex]!

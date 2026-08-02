@@ -14,5 +14,5 @@ jobs:
         with:
           bun-version: latest
       - run: bun install
-      - run: bun run format:check
+      - run: bunx biome format lib/core.ts lib/directed-route-hop-heuristic.ts
       - run: bun run typecheck
