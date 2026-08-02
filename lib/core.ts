@@ -11,6 +11,11 @@ import {
   applyInitialAssignments,
   type TinyHyperGraphInitialAssignment,
 } from "./initialAssignments"
+import {
+  createLayerAwareRouteHeuristic,
+  getLayerAwarePortHeuristicCost,
+  type LayerAwareRouteHeuristic,
+} from "./layer-aware-route-heuristic"
 import { MinHeap } from "./MinHeap"
 import { shuffle } from "./shuffle"
 import type { StaticallyUnroutableRouteSummary } from "./static-reachability"
@@ -167,6 +172,7 @@ export interface TinyHyperGraphProblem {
 export interface TinyHyperGraphProblemSetup {
   // portHCostToEndOfRoute[portId * routeCount + routeId] = distance from port to end of route
   portHCostToEndOfRoute: Float64Array
+  layerAwareRouteHeuristic: LayerAwareRouteHeuristic
   portEndpointNetIds: Array<Set<NetId>>
   /** -1 for no endpoint, -2 for endpoints from multiple nets, otherwise the sole endpoint net. */
   portEndpointReservationNetId: Int32Array
@@ -458,13 +464,15 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
   computeProblemSetup(): TinyHyperGraphProblemSetup {
     const { topology, problem } = this
+    const layerAwareRouteHeuristic = createLayerAwareRouteHeuristic({
+      topology,
+      problem,
+      distanceToCost: this.DISTANCE_TO_COST,
+      minViaPadDiameter: this.minViaPadDiameter,
+    })
     const portHCostToEndOfRoute = this.USE_LAZY_ROUTE_HEURISTIC
       ? undefined
       : new Float64Array(topology.portCount * problem.routeCount)
-    const portX = (topology.portRoutingCostX ??
-      topology.portX) as unknown as ArrayLike<number>
-    const portY = (topology.portRoutingCostY ??
-      topology.portY) as unknown as ArrayLike<number>
     const portEndpointNetIds = Array.from(
       { length: topology.portCount },
       () => new Set<NetId>(),
@@ -488,21 +496,23 @@ export class TinyHyperGraphSolver extends BaseSolver {
       recordEndpointNet(problem.routeEndPort[routeId]!, routeNetId)
 
       if (portHCostToEndOfRoute) {
-        const endPortId = problem.routeEndPort[routeId]
-        const endX = portX[endPortId]
-        const endY = portY[endPortId]
-
         for (let portId = 0; portId < topology.portCount; portId++) {
-          const dx = portX[portId] - endX
-          const dy = portY[portId] - endY
           portHCostToEndOfRoute[portId * problem.routeCount + routeId] =
-            Math.hypot(dx, dy) * this.DISTANCE_TO_COST
+            getLayerAwarePortHeuristicCost({
+              topology,
+              problem,
+              layerAwareRouteHeuristic,
+              distanceToCost: this.DISTANCE_TO_COST,
+              routeId,
+              portId,
+            })
         }
       }
     }
 
     return {
       portHCostToEndOfRoute: portHCostToEndOfRoute as Float64Array,
+      layerAwareRouteHeuristic,
       portEndpointNetIds,
       portEndpointReservationNetId,
     }
@@ -1537,14 +1547,14 @@ export class TinyHyperGraphSolver extends BaseSolver {
       ]
     }
 
-    const endPortId = this.problem.routeEndPort[this.state.currentRouteId!]
-    const dx =
-      this.getPortRoutingCostX(neighborPortId) -
-      this.getPortRoutingCostX(endPortId)
-    const dy =
-      this.getPortRoutingCostY(neighborPortId) -
-      this.getPortRoutingCostY(endPortId)
-    return Math.hypot(dx, dy) * this.DISTANCE_TO_COST
+    return getLayerAwarePortHeuristicCost({
+      topology: this.topology,
+      problem: this.problem,
+      layerAwareRouteHeuristic: this.problemSetup.layerAwareRouteHeuristic,
+      distanceToCost: this.DISTANCE_TO_COST,
+      routeId: this.state.currentRouteId!,
+      portId: neighborPortId,
+    })
   }
 
   protected getPortRoutingCostX(portId: PortId): number {
