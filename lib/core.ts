@@ -683,6 +683,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       }
 
       const h = this.computeH(neighborPortId, nextRegionId)
+      if (!Number.isFinite(h)) continue
 
       const newCandidate = {
         prevRegionId: currentCandidate.nextRegionId,
