@@ -281,6 +281,8 @@ test("cross-layer search finds the legal layer-change detour", () => {
     createCrossLayerDetourTopology(),
     createCrossLayerDetourProblem(),
     {
+      ACCEPT_BEST_SOLUTION_ON_TIMEOUT: false,
+      GREEDY_FINAL_ROUTE_ITERS: 0,
       MAX_ITERATIONS: 12,
       RIP_THRESHOLD_START: 1,
       STATIC_REACHABILITY_PRECHECK: false,
