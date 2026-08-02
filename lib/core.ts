@@ -1559,8 +1559,12 @@ export class TinyHyperGraphSolver extends BaseSolver {
     const routeId = this.state.currentRouteId!
     const directedHopCountToEnd =
       this.problemSetup.directedHopCountToEndByRoute[routeId]
+    const startPortId = this.problem.routeStartPort[routeId]!
 
-    if (directedHopCountToEnd) {
+    if (
+      directedHopCountToEnd &&
+      this.topology.portZ[neighborPortId] === this.topology.portZ[startPortId]
+    ) {
       const directedHopCount = getDirectedRouteHopCount(
         this.topology,
         directedHopCountToEnd,
