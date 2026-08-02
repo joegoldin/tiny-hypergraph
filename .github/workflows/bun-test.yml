@@ -36,7 +36,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-snapshots
-          path: |
-            tests/**/__snapshots__/*.diff.png
-            tests/**/__snapshots__/*.snap.svg
+          path: tests/**/__snapshots__/*.diff.png
           if-no-files-found: ignore
