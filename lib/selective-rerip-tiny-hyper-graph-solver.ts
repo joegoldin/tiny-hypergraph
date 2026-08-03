@@ -156,12 +156,17 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   private selectiveReripCongestionUpdateCount = 0
 
+  private readonly maxIterationsWithoutCommitProgress: number
+
+  private maxCommittedRouteCount = 0
+
   constructor(
     topology: TinyHyperGraphTopology,
     problem: TinyHyperGraphProblem,
     options?: TinyHyperGraphSolverOptions,
   ) {
     super(topology, problem, options)
+    this.maxIterationsWithoutCommitProgress = this.MAX_ITERATIONS
   }
 
   getSelectiveReripStats(): SelectiveReripTinyHyperGraphStats {
@@ -183,6 +188,23 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       ],
       lastRippedRouteIds: [...this.selectiveReripStats.lastRippedRouteIds],
     }
+  }
+
+  override _step(): void {
+    const activeRouteCount =
+      this.state.currentRouteId === undefined ? 0 : 1
+    const committedRouteCount =
+      this.problem.routeCount -
+      this.state.unroutedRoutes.length -
+      activeRouteCount
+
+    if (committedRouteCount > this.maxCommittedRouteCount) {
+      this.maxCommittedRouteCount = committedRouteCount
+      this.MAX_ITERATIONS =
+        this.iterations + this.maxIterationsWithoutCommitProgress
+    }
+
+    super._step()
   }
 
   override onOutOfCandidates(): void {
