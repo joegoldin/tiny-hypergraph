@@ -38,7 +38,7 @@ type RelaxedSearchHopData = {
   resources: SelectiveReripBlockerResource[]
 }
 
-const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
+const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 10
 
 export type FailedOwnerPairCount = {
   failedRouteId: RouteId
