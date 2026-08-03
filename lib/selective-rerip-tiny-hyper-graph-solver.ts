@@ -46,6 +46,12 @@ export type FailedOwnerPairCount = {
   count: number
 }
 
+export type RouteSearchIterationCount = {
+  routeId: RouteId
+  totalIterations: number
+  maxAttemptIterations: number
+}
+
 export type SelectiveReripTinyHyperGraphStats = {
   selectiveRipCount: number
   selectivelyRippedRouteCount: number
@@ -63,6 +69,8 @@ export type SelectiveReripTinyHyperGraphStats = {
   lastRippedRouteIds: RouteId[]
   lastRelaxedSearchExpandedLabelCount: number
   lastAlternateSearchExpandedLabelCount: number
+  currentRouteSearchIterationCount: number
+  topRouteSearchIterationCounts: RouteSearchIterationCount[]
 }
 
 const createInitialSelectiveReripStats =
@@ -81,6 +89,8 @@ const createInitialSelectiveReripStats =
     lastRippedRouteIds: [],
     lastRelaxedSearchExpandedLabelCount: 0,
     lastAlternateSearchExpandedLabelCount: 0,
+    currentRouteSearchIterationCount: 0,
+    topRouteSearchIterationCounts: [],
   })
 
 export function orderConnectionsByNetCardinality<TConnection>(
@@ -156,17 +166,51 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   private selectiveReripCongestionUpdateCount = 0
 
+  private readonly routeSearchIterationCountByRouteId: Uint32Array
+
+  private readonly maxRouteSearchIterationCountByRouteId: Uint32Array
+
+  private currentRouteSearchIterationCount = 0
+
+  private countedRouteId: RouteId | undefined
+
   constructor(
     topology: TinyHyperGraphTopology,
     problem: TinyHyperGraphProblem,
     options?: TinyHyperGraphSolverOptions,
   ) {
     super(topology, problem, options)
+    this.routeSearchIterationCountByRouteId = new Uint32Array(
+      problem.routeCount,
+    )
+    this.maxRouteSearchIterationCountByRouteId = new Uint32Array(
+      problem.routeCount,
+    )
   }
 
   getSelectiveReripStats(): SelectiveReripTinyHyperGraphStats {
+    const topRouteSearchIterationCounts = Array.from(
+      this.routeSearchIterationCountByRouteId,
+      (totalIterations, routeId) => ({
+        routeId,
+        totalIterations,
+        maxAttemptIterations:
+          this.maxRouteSearchIterationCountByRouteId[routeId]!,
+      }),
+    )
+      .filter(({ totalIterations }) => totalIterations > 0)
+      .sort(
+        (left, right) =>
+          right.totalIterations - left.totalIterations ||
+          left.routeId - right.routeId,
+      )
+      .slice(0, 20)
+
     return {
       ...this.selectiveReripStats,
+      currentRouteSearchIterationCount:
+        this.currentRouteSearchIterationCount,
+      topRouteSearchIterationCounts,
       failedOwnerPairs: this.selectiveReripStats.failedOwnerPairs.map(
         (pair) => ({
           ...pair,
@@ -182,6 +226,30 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
         ...this.selectiveReripStats.lastAlternateOwnerRouteIds,
       ],
       lastRippedRouteIds: [...this.selectiveReripStats.lastRippedRouteIds],
+    }
+  }
+
+  override _step(): void {
+    const routeId =
+      this.state.currentRouteId ?? this.state.unroutedRoutes[0]
+    if (routeId !== undefined) {
+      if (this.countedRouteId !== routeId) {
+        this.countedRouteId = routeId
+        this.currentRouteSearchIterationCount = 0
+      }
+      this.currentRouteSearchIterationCount += 1
+      this.routeSearchIterationCountByRouteId[routeId] += 1
+      this.maxRouteSearchIterationCountByRouteId[routeId] = Math.max(
+        this.maxRouteSearchIterationCountByRouteId[routeId]!,
+        this.currentRouteSearchIterationCount,
+      )
+    }
+
+    super._step()
+
+    if (this.state.currentRouteId === undefined) {
+      this.countedRouteId = undefined
+      this.currentRouteSearchIterationCount = 0
     }
   }
 
