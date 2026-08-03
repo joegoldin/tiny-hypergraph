@@ -1571,6 +1571,11 @@ export class TinyHyperGraphSolver extends BaseSolver {
 }
 
 class GreedyFinalRouteSolver extends TinyHyperGraphSolver {
+  override onOutOfCandidates(): void {
+    this.failed = true
+    this.error = "GreedyFinalRouteSolver ran out of candidates"
+  }
+
   override computeG(
     currentCandidate: Candidate,
     neighborPortId: PortId,
