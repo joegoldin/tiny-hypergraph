@@ -39,6 +39,7 @@ type RelaxedSearchHopData = {
 }
 
 const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
+const RETRY_HEURISTIC_WEIGHT = 2
 
 export type FailedOwnerPairCount = {
   failedRouteId: RouteId
@@ -183,6 +184,15 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       ],
       lastRippedRouteIds: [...this.selectiveReripStats.lastRippedRouteIds],
     }
+  }
+
+  override computeH(neighborPortId: PortId): number {
+    const heuristic = super.computeH(neighborPortId)
+    const routeId = this.state.currentRouteId
+    return routeId !== undefined &&
+      this.routeAttemptCountByRouteId[routeId]! > 1
+      ? heuristic * RETRY_HEURISTIC_WEIGHT
+      : heuristic
   }
 
   override onOutOfCandidates(): void {
