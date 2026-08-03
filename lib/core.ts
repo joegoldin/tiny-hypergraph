@@ -658,6 +658,19 @@ export class TinyHyperGraphSolver extends BaseSolver {
         continue
       }
 
+      const directedHopCountToEnd = this.problemSetup.directedHopCountToEnd
+      if (
+        directedHopCountToEnd &&
+        getDirectedRouteHopCount(
+          topology,
+          directedHopCountToEnd,
+          neighborPortId,
+          nextRegionId,
+        ) < 0
+      ) {
+        continue
+      }
+
       const h = this.computeH(neighborPortId, nextRegionId)
 
       const newCandidate = {
