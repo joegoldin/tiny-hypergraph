@@ -1,4 +1,5 @@
 import {
+  type Candidate,
   createEmptyRegionIntersectionCache,
   type TinyHyperGraphProblem,
   type TinyHyperGraphSolverOptions,
@@ -42,6 +43,11 @@ type RelaxedBlockerPathResult = DistinctOwnerBlockerSearchResult<
   RelaxedSearchState,
   RouteId,
   RelaxedSearchHopData
+>
+
+type RelaxedBlockerPathSuccess = Extract<
+  RelaxedBlockerPathResult,
+  { found: true }
 >
 
 const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
@@ -163,6 +169,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
   private selectiveReripCongestionUpdateCount = 0
 
   private readonly displacedRouteIdsPendingRetry = new Set<RouteId>()
+
+  private committedBlockerPathCount = 0
 
   constructor(
     topology: TinyHyperGraphTopology,
@@ -319,14 +327,20 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       this.displacedRouteIdsPendingRetry.add(rippedRouteId)
     }
     this.rebuildCommittedState(rippedRouteIds)
+    const committedBlockerPath = this.tryCommitBlockerPath(
+      failedRouteId,
+      alternatePath?.found ? alternatePath : directPath,
+    )
     this.state.ripCount += 1
-    this.state.currentRouteId = undefined
-    this.state.currentRouteNetId = undefined
     this.state.unroutedRoutes = orderRoutesAfterSelectiveRerip({
       failedRouteId,
       pendingRouteIds: this.state.unroutedRoutes,
       rippedRouteIds,
-    })
+    }).filter((routeId) => !committedBlockerPath || routeId !== failedRouteId)
+    if (!committedBlockerPath) {
+      this.state.currentRouteId = undefined
+      this.state.currentRouteNetId = undefined
+    }
     this.state.candidateQueue.clear()
     this.resetCandidateBestCosts()
     this.state.goalPortId = -1
@@ -346,6 +360,88 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     this.selectiveReripStats.lastAlternateSearchExpandedLabelCount =
       alternatePath?.expandedLabelCount ?? 0
     this.publishSelectiveReripStats()
+  }
+
+  private tryCommitBlockerPath(
+    routeId: RouteId,
+    blockerPath: RelaxedBlockerPathSuccess,
+  ): boolean {
+    if (
+      this.state.currentRouteId !== routeId ||
+      this.state.currentRouteNetId === undefined
+    ) {
+      return false
+    }
+
+    const startState = blockerPath.states[0]
+    if (
+      startState === undefined ||
+      startState.portId !== this.problem.routeStartPort[routeId]
+    ) {
+      return false
+    }
+
+    const routeNetId = this.state.currentRouteNetId
+    const goalPortId = this.problem.routeEndPort[routeId]!
+    const portOwners = this.getPortOwners()
+    let finalCandidate: Candidate = {
+      portId: startState.portId,
+      nextRegionId: startState.nextRegionId,
+      f: 0,
+      g: 0,
+      h: 0,
+    }
+
+    for (
+      let stateIndex = 1;
+      stateIndex < blockerPath.states.length;
+      stateIndex++
+    ) {
+      const previousState = blockerPath.states[stateIndex - 1]!
+      const state = blockerPath.states[stateIndex]!
+      if (
+        previousState.portId !== finalCandidate.portId ||
+        previousState.nextRegionId !== finalCandidate.nextRegionId ||
+        this.isRegionReservedForDifferentNet(previousState.nextRegionId) ||
+        this.isPortReservedForDifferentNet(state.portId) ||
+        (state.portId !== goalPortId &&
+          this.problem.portSectionMask[state.portId] === 0)
+      ) {
+        return false
+      }
+
+      const blockerResources = this.getHopBlockerResources({
+        regionId: previousState.nextRegionId,
+        fromPortId: previousState.portId,
+        toPortId: state.portId,
+        routeNetId,
+        portOwners,
+      })
+      if (blockerResources.length > 0) return false
+
+      const g = this.computeG(finalCandidate, state.portId)
+      if (!Number.isFinite(g)) return false
+
+      const h = state.portId === goalPortId ? 0 : this.computeH(state.portId)
+      finalCandidate = {
+        prevRegionId: previousState.nextRegionId,
+        nextRegionId: state.nextRegionId,
+        portId: state.portId,
+        f: g + h,
+        g,
+        h,
+        prevCandidate: finalCandidate,
+      }
+    }
+
+    if (finalCandidate.portId !== goalPortId) return false
+    this.onPathFound(finalCandidate)
+    this.committedBlockerPathCount++
+    this.stats = {
+      ...this.stats,
+      committedBlockerPathCount: this.committedBlockerPathCount,
+    }
+    return true
   }
 
   private addCongestionCostForSelectiveRerip(): void {
