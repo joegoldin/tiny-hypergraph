@@ -39,7 +39,7 @@ type RelaxedSearchHopData = {
 }
 
 const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
-const RETRY_SEARCH_BUDGET_MULTIPLIER = 8
+const RETRY_SEARCH_BUDGET_MULTIPLIER = 4
 const MIN_RETRY_SEARCH_ITERATIONS = 16_000
 
 export type FailedOwnerPairCount = {
