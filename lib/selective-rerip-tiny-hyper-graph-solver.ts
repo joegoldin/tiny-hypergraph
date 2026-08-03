@@ -1,4 +1,5 @@
 import {
+  type Candidate,
   createEmptyRegionIntersectionCache,
   type TinyHyperGraphProblem,
   type TinyHyperGraphSolverOptions,
@@ -39,6 +40,12 @@ type RelaxedSearchHopData = {
 }
 
 const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
+
+type SolvedPathSegment = {
+  regionId: RegionId
+  fromPortId: PortId
+  toPortId: PortId
+}
 
 export type FailedOwnerPairCount = {
   failedRouteId: RouteId
@@ -156,6 +163,13 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   private selectiveReripCongestionUpdateCount = 0
 
+  private readonly lastSuccessfulPathByRouteId = new Map<
+    RouteId,
+    SolvedPathSegment[]
+  >()
+
+  private seededRetryPathCount = 0
+
   constructor(
     topology: TinyHyperGraphTopology,
     problem: TinyHyperGraphProblem,
@@ -183,6 +197,36 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       ],
       lastRippedRouteIds: [...this.selectiveReripStats.lastRippedRouteIds],
     }
+  }
+
+  override _step(): void {
+    if (this.state.currentRouteId !== undefined) {
+      super._step()
+      return
+    }
+
+    const nextRouteId = this.state.unroutedRoutes[0]
+    super._step()
+    if (
+      nextRouteId === undefined ||
+      this.state.currentRouteId !== nextRouteId ||
+      this.routeAttemptCountByRouteId[nextRouteId]! <= 1
+    ) {
+      return
+    }
+
+    this.seedRetryFromLastSuccessfulPath(nextRouteId)
+  }
+
+  override onPathFound(finalCandidate: Candidate): void {
+    const routeId = this.state.currentRouteId
+    if (routeId !== undefined) {
+      this.lastSuccessfulPathByRouteId.set(
+        routeId,
+        this.getSolvedPathSegments(finalCandidate),
+      )
+    }
+    super.onPathFound(finalCandidate)
   }
 
   override onOutOfCandidates(): void {
@@ -304,6 +348,87 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
         this.state.regionIntersectionCaches[regionId]?.existingRegionCost ?? 0
       this.state.regionCongestionCost[regionId] +=
         regionCost * this.RIP_CONGESTION_REGION_COST_FACTOR
+    }
+  }
+
+  private seedRetryFromLastSuccessfulPath(routeId: RouteId): void {
+    const solvedPath = this.lastSuccessfulPathByRouteId.get(routeId)
+    if (!solvedPath?.length) return
+
+    const startPortId = this.problem.routeStartPort[routeId]!
+    const startRegionId = this.getStartingNextRegionId(routeId, startPortId)
+    if (startRegionId === undefined) return
+
+    let candidate: Candidate = {
+      nextRegionId: startRegionId,
+      portId: startPortId,
+      f: 0,
+      g: 0,
+      h: 0,
+    }
+    let deepestSeedCandidate: Candidate | undefined
+
+    for (const segment of solvedPath) {
+      if (
+        segment.regionId !== candidate.nextRegionId ||
+        segment.fromPortId !== candidate.portId ||
+        segment.toPortId === this.state.goalPortId
+      ) {
+        break
+      }
+
+      const assignedNetId = this.state.portAssignment[segment.toPortId]
+      if (
+        this.isPortReservedForDifferentNet(segment.toPortId) ||
+        (assignedNetId !== -1 &&
+          assignedNetId !== this.state.currentRouteNetId) ||
+        this.problem.portSectionMask[segment.toPortId] === 0
+      ) {
+        break
+      }
+
+      const g = this.computeG(candidate, segment.toPortId)
+      if (!Number.isFinite(g)) break
+
+      const [firstRegionId, secondRegionId] =
+        this.topology.incidentPortRegion[segment.toPortId] ?? []
+      const nextRegionId =
+        firstRegionId === candidate.nextRegionId
+          ? secondRegionId
+          : firstRegionId
+      if (
+        nextRegionId === undefined ||
+        this.isRegionReservedForDifferentNet(nextRegionId)
+      ) {
+        break
+      }
+
+      const h = this.computeH(segment.toPortId, nextRegionId)
+      candidate = {
+        prevRegionId: segment.regionId,
+        nextRegionId,
+        portId: segment.toPortId,
+        g,
+        h,
+        f: g + h,
+        prevCandidate: candidate,
+      }
+      deepestSeedCandidate = candidate
+    }
+
+    if (!deepestSeedCandidate) return
+    const hopId = this.getHopId(
+      deepestSeedCandidate.portId,
+      deepestSeedCandidate.nextRegionId,
+    )
+    if (deepestSeedCandidate.g >= this.getCandidateBestCost(hopId)) return
+
+    this.setCandidateBestCost(hopId, deepestSeedCandidate.g)
+    this.state.candidateQueue.queue(deepestSeedCandidate)
+    this.seededRetryPathCount++
+    this.stats = {
+      ...this.stats,
+      seededRetryPathCount: this.seededRetryPathCount,
     }
   }
 
