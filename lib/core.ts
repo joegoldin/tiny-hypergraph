@@ -8,9 +8,9 @@ import {
 } from "./computeRegionCost"
 import { countNewIntersectionsWithValues } from "./countNewIntersections"
 import {
-  createDirectedRouteHopHeuristic,
-  getDirectedRouteHopCount,
-} from "./directed-route-hop-heuristic"
+  createDirectedRouteDistanceHeuristic,
+  getDirectedRouteDistance,
+} from "./directed-route-distance-heuristic"
 import {
   applyInitialAssignments,
   type TinyHyperGraphInitialAssignment,
@@ -171,8 +171,8 @@ export interface TinyHyperGraphProblem {
 export interface TinyHyperGraphProblemSetup {
   // portHCostToEndOfRoute[portId * routeCount + routeId] = distance from port to end of route
   portHCostToEndOfRoute: Float64Array
-  /** Directed graph distance for the route currently being searched. */
-  directedHopCountToEnd?: Int32Array
+  /** Legal physical distance for the route currently being searched. */
+  directedDistanceToEnd?: Float64Array
   portEndpointNetIds: Array<Set<NetId>>
   /** -1 for no endpoint, -2 for endpoints from multiple nets, otherwise the sole endpoint net. */
   portEndpointReservationNetId: Int32Array
@@ -559,8 +559,8 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
       this.resetCandidateBestCosts()
       const startingPortId = problem.routeStartPort[state.currentRouteId!]
-      this.problemSetup.directedHopCountToEnd =
-        createDirectedRouteHopHeuristic({
+      this.problemSetup.directedDistanceToEnd =
+        createDirectedRouteDistanceHeuristic({
           topology,
           problem,
           portEndpointReservationNetId:
@@ -1551,16 +1551,16 @@ export class TinyHyperGraphSolver extends BaseSolver {
     const directDistanceCost = precomputedHCost
       ? precomputedHCost[neighborPortId * this.problem.routeCount + routeId]!
       : this.computeDirectDistanceHeuristic(neighborPortId, routeId)
-    const directedHopCountToEnd = this.problemSetup.directedHopCountToEnd
-    if (directedHopCountToEnd) {
-      const directedHopCount = getDirectedRouteHopCount(
+    const directedDistanceToEnd = this.problemSetup.directedDistanceToEnd
+    if (directedDistanceToEnd) {
+      const directedDistance = getDirectedRouteDistance(
         this.topology,
-        directedHopCountToEnd,
+        directedDistanceToEnd,
         neighborPortId,
         nextRegionId,
       )
-      if (directedHopCount >= 0) {
-        return directDistanceCost + directedHopCount * this.DISTANCE_TO_COST
+      if (Number.isFinite(directedDistance)) {
+        return directedDistance * this.DISTANCE_TO_COST
       }
     }
 
