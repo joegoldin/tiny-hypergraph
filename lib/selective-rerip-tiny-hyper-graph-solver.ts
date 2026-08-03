@@ -59,12 +59,14 @@ export type SelectiveReripTinyHyperGraphStats = {
   globalReripReason?: "no_path" | "expansion_limit" | "no_blocker_path"
   alternateBlockerSearchCount: number
   alternateOwnerCount: number
+  conflictCycleCount: number
   failedOwnerPairCount: number
   maxFailedOwnerPairCount: number
   failedOwnerPairs: FailedOwnerPairCount[]
   lastFailedRouteId?: RouteId
   lastDirectOwnerRouteIds: RouteId[]
   lastRepeatedOwnerRouteIds: RouteId[]
+  lastCyclicOwnerRouteIds: RouteId[]
   lastAlternateOwnerRouteIds: RouteId[]
   lastRippedRouteIds: RouteId[]
   lastRelaxedSearchExpandedLabelCount: number
@@ -78,11 +80,13 @@ const createInitialSelectiveReripStats =
     globalReripCount: 0,
     alternateBlockerSearchCount: 0,
     alternateOwnerCount: 0,
+    conflictCycleCount: 0,
     failedOwnerPairCount: 0,
     maxFailedOwnerPairCount: 0,
     failedOwnerPairs: [],
     lastDirectOwnerRouteIds: [],
     lastRepeatedOwnerRouteIds: [],
+    lastCyclicOwnerRouteIds: [],
     lastAlternateOwnerRouteIds: [],
     lastRippedRouteIds: [],
     lastRelaxedSearchExpandedLabelCount: 0,
@@ -186,6 +190,9 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       lastRepeatedOwnerRouteIds: [
         ...this.selectiveReripStats.lastRepeatedOwnerRouteIds,
       ],
+      lastCyclicOwnerRouteIds: [
+        ...this.selectiveReripStats.lastCyclicOwnerRouteIds,
+      ],
       lastAlternateOwnerRouteIds: [
         ...this.selectiveReripStats.lastAlternateOwnerRouteIds,
       ],
@@ -249,6 +256,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       this.selectiveReripStats.lastFailedRouteId = failedRouteId
       this.selectiveReripStats.lastDirectOwnerRouteIds = []
       this.selectiveReripStats.lastRepeatedOwnerRouteIds = []
+      this.selectiveReripStats.lastCyclicOwnerRouteIds = []
       this.selectiveReripStats.lastAlternateOwnerRouteIds = []
       this.selectiveReripStats.lastRippedRouteIds = []
       this.selectiveReripStats.lastRelaxedSearchExpandedLabelCount =
@@ -265,6 +273,15 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       const count = this.incrementFailedOwnerPair(failedRouteId, ownerRouteId)
       if (count >= 2) repeatedOwnerRouteIds.push(ownerRouteId)
     }
+    const cyclicOwnerRouteIds = directOwnerRouteIds.filter((ownerRouteId) =>
+      this.hasFailedOwnerPath(ownerRouteId, failedRouteId),
+    )
+    const ownerRouteIdsToAvoid = [
+      ...new Set([...repeatedOwnerRouteIds, ...cyclicOwnerRouteIds]),
+    ]
+    if (cyclicOwnerRouteIds.length > 0) {
+      this.selectiveReripStats.conflictCycleCount += 1
+    }
 
     let alternatePath:
       | DistinctOwnerBlockerSearchResult<
@@ -273,10 +290,10 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
           RelaxedSearchHopData
         >
       | undefined
-    if (repeatedOwnerRouteIds.length > 0) {
+    if (ownerRouteIdsToAvoid.length > 0) {
       this.selectiveReripStats.alternateBlockerSearchCount += 1
       alternatePath = this.findRelaxedBlockerPath(
-        new Set(repeatedOwnerRouteIds),
+        new Set(ownerRouteIdsToAvoid),
       )
       if (!alternatePath.found) {
         this.selectiveReripStats.globalReripCount += 1
@@ -285,6 +302,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
         this.selectiveReripStats.lastDirectOwnerRouteIds = directOwnerRouteIds
         this.selectiveReripStats.lastRepeatedOwnerRouteIds =
           repeatedOwnerRouteIds
+        this.selectiveReripStats.lastCyclicOwnerRouteIds = cyclicOwnerRouteIds
         this.selectiveReripStats.lastAlternateOwnerRouteIds = []
         this.selectiveReripStats.lastRippedRouteIds = []
         this.selectiveReripStats.lastRelaxedSearchExpandedLabelCount =
@@ -338,6 +356,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     this.selectiveReripStats.lastFailedRouteId = failedRouteId
     this.selectiveReripStats.lastDirectOwnerRouteIds = directOwnerRouteIds
     this.selectiveReripStats.lastRepeatedOwnerRouteIds = repeatedOwnerRouteIds
+    this.selectiveReripStats.lastCyclicOwnerRouteIds = cyclicOwnerRouteIds
     this.selectiveReripStats.lastAlternateOwnerRouteIds =
       alternateOnlyOwnerRouteIds
     this.selectiveReripStats.lastRippedRouteIds = [...rippedRouteIds]
@@ -663,6 +682,24 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     ownerCounts.set(ownerRouteId, count)
     this.failedOwnerPairCounts.set(failedRouteId, ownerCounts)
     return count
+  }
+
+  private hasFailedOwnerPath(
+    fromRouteId: RouteId,
+    targetRouteId: RouteId,
+  ): boolean {
+    const pendingRouteIds = [fromRouteId]
+    const visitedRouteIds = new Set<RouteId>()
+    while (pendingRouteIds.length > 0) {
+      const routeId = pendingRouteIds.pop()!
+      if (routeId === targetRouteId) return true
+      if (visitedRouteIds.has(routeId)) continue
+      visitedRouteIds.add(routeId)
+      pendingRouteIds.push(
+        ...(this.failedOwnerPairCounts.get(routeId)?.keys() ?? []),
+      )
+    }
+    return false
   }
 
   private publishSelectiveReripStats(): void {
