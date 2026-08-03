@@ -327,6 +327,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       this.displacedRouteIdsPendingRetry.add(rippedRouteId)
     }
     this.rebuildCommittedState(rippedRouteIds)
+    this.state.currentRouteNetId = this.problem.routeNet[failedRouteId]!
     const committedBlockerPath = this.tryCommitBlockerPath(
       failedRouteId,
       alternatePath?.found ? alternatePath : directPath,
