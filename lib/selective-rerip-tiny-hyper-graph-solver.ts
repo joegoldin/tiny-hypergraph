@@ -1,4 +1,5 @@
 import {
+  type Candidate,
   createEmptyRegionIntersectionCache,
   type TinyHyperGraphProblem,
   type TinyHyperGraphSolverOptions,
@@ -39,6 +40,12 @@ type RelaxedSearchHopData = {
 }
 
 const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
+
+type SolvedPathSegment = {
+  regionId: RegionId
+  fromPortId: PortId
+  toPortId: PortId
+}
 
 export type FailedOwnerPairCount = {
   failedRouteId: RouteId
@@ -156,6 +163,11 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   private selectiveReripCongestionUpdateCount = 0
 
+  private readonly lastSuccessfulPathByRouteId = new Map<
+    RouteId,
+    SolvedPathSegment[]
+  >()
+
   constructor(
     topology: TinyHyperGraphTopology,
     problem: TinyHyperGraphProblem,
@@ -183,6 +195,22 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       ],
       lastRippedRouteIds: [...this.selectiveReripStats.lastRippedRouteIds],
     }
+  }
+
+  override onPathFound(finalCandidate: Candidate): void {
+    const routeId = this.state.currentRouteId
+    if (routeId !== undefined) {
+      this.lastSuccessfulPathByRouteId.set(
+        routeId,
+        this.getSolvedPathSegments(finalCandidate),
+      )
+    }
+    super.onPathFound(finalCandidate)
+  }
+
+  override tryFinalAcceptance(): void {
+    this.publishCachedPathDiagnostics()
+    super.tryFinalAcceptance()
   }
 
   override onOutOfCandidates(): void {
@@ -481,6 +509,94 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     }
 
     return resources
+  }
+
+  private publishCachedPathDiagnostics(): void {
+    const previousCurrentRouteId = this.state.currentRouteId
+    const previousCurrentRouteNetId = this.state.currentRouteNetId
+    const portOwners = this.getPortOwners()
+    const remainingRouteIds = this.getRemainingRouteIdsForGreedyFinalRoute()
+
+    const cachedPathDiagnostics = remainingRouteIds.map((routeId) => {
+      const routeNetId = this.problem.routeNet[routeId]!
+      const solvedPath = this.lastSuccessfulPathByRouteId.get(routeId) ?? []
+      const blockerRouteIds = new Set<RouteId>()
+      let blockedSegmentCount = 0
+      let firstBlockedSegmentIndex: number | undefined
+      let firstNonFiniteSegmentIndex: number | undefined
+
+      this.state.currentRouteId = routeId
+      this.state.currentRouteNetId = routeNetId
+
+      for (
+        let segmentIndex = 0;
+        segmentIndex < solvedPath.length;
+        segmentIndex++
+      ) {
+        const segment = solvedPath[segmentIndex]!
+        const resources = this.getHopBlockerResources({
+          regionId: segment.regionId,
+          fromPortId: segment.fromPortId,
+          toPortId: segment.toPortId,
+          routeNetId,
+          portOwners,
+        })
+        const isReserved =
+          this.isRegionReservedForDifferentNet(segment.regionId) ||
+          this.isPortReservedForDifferentNet(segment.toPortId)
+
+        if (resources.length > 0 || isReserved) {
+          blockedSegmentCount++
+          firstBlockedSegmentIndex ??= segmentIndex
+        }
+        for (const resource of resources) {
+          for (const ownerRouteId of resource.owners) {
+            blockerRouteIds.add(ownerRouteId)
+          }
+        }
+
+        const segmentCost = this.computeG(
+          {
+            portId: segment.fromPortId,
+            nextRegionId: segment.regionId,
+            f: 0,
+            g: 0,
+            h: 0,
+          },
+          segment.toPortId,
+        )
+        if (!Number.isFinite(segmentCost)) {
+          firstNonFiniteSegmentIndex ??= segmentIndex
+        }
+      }
+
+      return {
+        routeId,
+        connectionId: this.getRouteConnectionId(routeId),
+        segmentCount: solvedPath.length,
+        blockedSegmentCount,
+        firstBlockedSegmentIndex,
+        firstNonFiniteSegmentIndex,
+        blockerRouteIds: [...blockerRouteIds],
+        replayable:
+          solvedPath.length > 0 &&
+          blockedSegmentCount === 0 &&
+          firstNonFiniteSegmentIndex === undefined,
+      }
+    })
+
+    this.state.currentRouteId = previousCurrentRouteId
+    this.state.currentRouteNetId = previousCurrentRouteNetId
+    this.stats = {
+      ...this.stats,
+      cachedPathDiagnostics,
+      cachedPathRouteCount: cachedPathDiagnostics.filter(
+        ({ segmentCount }) => segmentCount > 0,
+      ).length,
+      replayableCachedPathCount: cachedPathDiagnostics.filter(
+        ({ replayable }) => replayable,
+      ).length,
+    }
   }
 
   private getPortOwners(): Map<PortId, Set<RouteId>> {
