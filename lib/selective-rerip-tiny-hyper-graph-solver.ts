@@ -1,4 +1,5 @@
 import {
+  type Candidate,
   createEmptyRegionIntersectionCache,
   type TinyHyperGraphProblem,
   type TinyHyperGraphSolverOptions,
@@ -42,6 +43,11 @@ type RelaxedBlockerPathResult = DistinctOwnerBlockerSearchResult<
   RelaxedSearchState,
   RouteId,
   RelaxedSearchHopData
+>
+
+type RelaxedBlockerPathSuccess = Extract<
+  RelaxedBlockerPathResult,
+  { found: true }
 >
 
 const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
@@ -164,6 +170,13 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   private readonly displacedRouteIdsPendingRetry = new Set<RouteId>()
 
+  private readonly retrySeedPathByRouteId = new Map<
+    RouteId,
+    RelaxedBlockerPathSuccess
+  >()
+
+  private blockerPathSeedCount = 0
+
   constructor(
     topology: TinyHyperGraphTopology,
     problem: TinyHyperGraphProblem,
@@ -200,6 +213,10 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
    */
   override _step(): void {
     const nextRouteId = this.state.unroutedRoutes[0]
+    const retrySeedPath =
+      this.state.currentRouteId === undefined && nextRouteId !== undefined
+        ? this.retrySeedPathByRouteId.get(nextRouteId)
+        : undefined
     const retryRouteId =
       this.state.currentRouteId === undefined &&
       nextRouteId !== undefined &&
@@ -209,6 +226,12 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
     super._step()
 
+    if (nextRouteId !== undefined && retrySeedPath !== undefined) {
+      this.retrySeedPathByRouteId.delete(nextRouteId)
+      if (this.state.currentRouteId === nextRouteId) {
+        this.seedRetrySearch(nextRouteId, retrySeedPath)
+      }
+    }
     if (retryRouteId !== undefined) {
       this.displacedRouteIdsPendingRetry.delete(retryRouteId)
     }
@@ -232,6 +255,12 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     this.handleBlockedRoute(this.findRelaxedBlockerPath())
   }
 
+  override resetRoutingStateForRerip(): void {
+    super.resetRoutingStateForRerip()
+    this.displacedRouteIdsPendingRetry.clear()
+    this.retrySeedPathByRouteId.clear()
+  }
+
   private handleBlockedRoute(directPath: RelaxedBlockerPathResult): void {
     const failedRouteId = this.state.currentRouteId
     if (failedRouteId === undefined) {
@@ -241,7 +270,6 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     }
 
     if (!directPath.found || directPath.owners.size === 0) {
-      this.displacedRouteIdsPendingRetry.clear()
       this.selectiveReripStats.globalReripCount += 1
       this.selectiveReripStats.globalReripReason = !directPath.found
         ? directPath.reason
@@ -319,6 +347,10 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       this.displacedRouteIdsPendingRetry.add(rippedRouteId)
     }
     this.rebuildCommittedState(rippedRouteIds)
+    this.retrySeedPathByRouteId.set(
+      failedRouteId,
+      alternatePath?.found ? alternatePath : directPath,
+    )
     this.state.ripCount += 1
     this.state.currentRouteId = undefined
     this.state.currentRouteNetId = undefined
@@ -346,6 +378,67 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     this.selectiveReripStats.lastAlternateSearchExpandedLabelCount =
       alternatePath?.expandedLabelCount ?? 0
     this.publishSelectiveReripStats()
+  }
+
+  private seedRetrySearch(
+    routeId: RouteId,
+    retrySeedPath: RelaxedBlockerPathSuccess,
+  ): void {
+    const startState = retrySeedPath.states[0]
+    if (
+      startState === undefined ||
+      startState.portId !== this.problem.routeStartPort[routeId]
+    ) {
+      return
+    }
+
+    let seedCandidate: Candidate = {
+      portId: startState.portId,
+      nextRegionId: startState.nextRegionId,
+      f: 0,
+      g: 0,
+      h: 0,
+    }
+    let deepestSeedCandidate: Candidate | undefined
+
+    for (
+      let stateIndex = 1;
+      stateIndex < retrySeedPath.states.length;
+      stateIndex++
+    ) {
+      const state = retrySeedPath.states[stateIndex]!
+      if (state.portId === this.state.goalPortId) break
+
+      const g = this.computeG(seedCandidate, state.portId)
+      if (!Number.isFinite(g)) break
+
+      const h = this.computeH(state.portId)
+      seedCandidate = {
+        prevRegionId: seedCandidate.nextRegionId,
+        nextRegionId: state.nextRegionId,
+        portId: state.portId,
+        f: g + h,
+        g,
+        h,
+        prevCandidate: seedCandidate,
+      }
+      deepestSeedCandidate = seedCandidate
+    }
+
+    if (deepestSeedCandidate === undefined) return
+    const hopId = this.getHopId(
+      deepestSeedCandidate.portId,
+      deepestSeedCandidate.nextRegionId,
+    )
+    if (deepestSeedCandidate.g >= this.getCandidateBestCost(hopId)) return
+
+    this.setCandidateBestCost(hopId, deepestSeedCandidate.g)
+    this.state.candidateQueue.queue(deepestSeedCandidate)
+    this.blockerPathSeedCount++
+    this.stats = {
+      ...this.stats,
+      blockerPathSeedCount: this.blockerPathSeedCount,
+    }
   }
 
   private addCongestionCostForSelectiveRerip(): void {
