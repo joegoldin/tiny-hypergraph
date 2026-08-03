@@ -129,6 +129,7 @@ export function orderRoutesAfterSelectiveRerip(params: {
   failedRouteId: RouteId
   pendingRouteIds: readonly RouteId[]
   rippedRouteIds: ReadonlySet<RouteId>
+  rippedRoutesFirst?: boolean
 }): RouteId[] {
   const pendingRouteIds = params.pendingRouteIds.filter(
     (routeId) =>
@@ -138,7 +139,9 @@ export function orderRoutesAfterSelectiveRerip(params: {
     (routeId) => routeId !== params.failedRouteId,
   )
 
-  return [params.failedRouteId, ...pendingRouteIds, ...rippedRouteIds]
+  return params.rippedRoutesFirst
+    ? [...rippedRouteIds, params.failedRouteId, ...pendingRouteIds]
+    : [params.failedRouteId, ...pendingRouteIds, ...rippedRouteIds]
 }
 
 /**
@@ -231,7 +234,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       alternatePath = this.findRelaxedBlockerPath(
         new Set(repeatedOwnerRouteIds),
       )
-      if (!alternatePath.found) {
+      if (!alternatePath.found && alternatePath.reason !== "no_path") {
         this.selectiveReripStats.globalReripCount += 1
         this.selectiveReripStats.globalReripReason = alternatePath.reason
         this.selectiveReripStats.lastFailedRouteId = failedRouteId
@@ -276,6 +279,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       failedRouteId,
       pendingRouteIds: this.state.unroutedRoutes,
       rippedRouteIds,
+      rippedRoutesFirst:
+        repeatedOwnerRouteIds.length > 0 && alternatePath?.found === false,
     })
     this.state.candidateQueue.clear()
     this.resetCandidateBestCosts()
