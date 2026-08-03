@@ -39,6 +39,8 @@ type RelaxedSearchHopData = {
 }
 
 const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
+const RETRY_SEARCH_BUDGET_MULTIPLIER = 8
+const MIN_RETRY_SEARCH_ITERATIONS = 16_000
 
 export type FailedOwnerPairCount = {
   failedRouteId: RouteId
@@ -156,6 +158,10 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   private selectiveReripCongestionUpdateCount = 0
 
+  private currentRouteSearchIterationCount = 0
+
+  private ignoreRetrySearchLimitForCurrentAttempt = false
+
   constructor(
     topology: TinyHyperGraphTopology,
     problem: TinyHyperGraphProblem,
@@ -183,6 +189,37 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       ],
       lastRippedRouteIds: [...this.selectiveReripStats.lastRippedRouteIds],
     }
+  }
+
+  override _step(): void {
+    const currentRouteId = this.state.currentRouteId
+    if (currentRouteId === undefined) {
+      this.currentRouteSearchIterationCount = 0
+      this.ignoreRetrySearchLimitForCurrentAttempt = false
+    } else {
+      this.currentRouteSearchIterationCount += 1
+      const retrySearchIterationLimit = Math.max(
+        MIN_RETRY_SEARCH_ITERATIONS,
+        Math.ceil(
+          (this.MAX_ITERATIONS / Math.max(1, this.problem.routeCount)) *
+            RETRY_SEARCH_BUDGET_MULTIPLIER,
+        ),
+      )
+      if (
+        !this.ignoreRetrySearchLimitForCurrentAttempt &&
+        this.routeSuccessCountByRouteId[currentRouteId]! > 0 &&
+        this.currentRouteSearchIterationCount >= retrySearchIterationLimit
+      ) {
+        const directPath = this.findRelaxedBlockerPath()
+        if (directPath.found && directPath.owners.size > 0) {
+          this.onOutOfCandidates()
+          return
+        }
+        this.ignoreRetrySearchLimitForCurrentAttempt = true
+      }
+    }
+
+    super._step()
   }
 
   override onOutOfCandidates(): void {
