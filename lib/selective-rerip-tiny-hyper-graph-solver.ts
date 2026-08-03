@@ -137,8 +137,14 @@ export function orderRoutesAfterSelectiveRerip(params: {
   const rippedRouteIds = [...params.rippedRouteIds].filter(
     (routeId) => routeId !== params.failedRouteId,
   )
+  const insertionIndex = Math.ceil(pendingRouteIds.length / 2)
 
-  return [params.failedRouteId, ...pendingRouteIds, ...rippedRouteIds]
+  return [
+    params.failedRouteId,
+    ...pendingRouteIds.slice(0, insertionIndex),
+    ...rippedRouteIds,
+    ...pendingRouteIds.slice(insertionIndex),
+  ]
 }
 
 /**
