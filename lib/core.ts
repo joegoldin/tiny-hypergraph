@@ -8,6 +8,10 @@ import {
 } from "./computeRegionCost"
 import { countNewIntersectionsWithValues } from "./countNewIntersections"
 import {
+  createDirectedRouteHopHeuristic,
+  getDirectedRouteHopCount,
+} from "./directed-route-hop-heuristic"
+import {
   applyInitialAssignments,
   type TinyHyperGraphInitialAssignment,
 } from "./initialAssignments"
@@ -167,6 +171,8 @@ export interface TinyHyperGraphProblem {
 export interface TinyHyperGraphProblemSetup {
   // portHCostToEndOfRoute[portId * routeCount + routeId] = distance from port to end of route
   portHCostToEndOfRoute: Float64Array
+  /** Directed graph distance for the route currently being searched. */
+  directedHopCountToEnd?: Int32Array
   portEndpointNetIds: Array<Set<NetId>>
   /** -1 for no endpoint, -2 for endpoints from multiple nets, otherwise the sole endpoint net. */
   portEndpointReservationNetId: Int32Array
@@ -553,6 +559,15 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
       this.resetCandidateBestCosts()
       const startingPortId = problem.routeStartPort[state.currentRouteId!]
+      this.problemSetup.directedHopCountToEnd =
+        createDirectedRouteHopHeuristic({
+          topology,
+          problem,
+          portEndpointReservationNetId:
+            this.problemSetup.portEndpointReservationNetId,
+          portAssignment: state.portAssignment,
+          routeId: state.currentRouteId!,
+        })
       state.candidateQueue.clear()
       const startingNextRegionId = this.getStartingNextRegionId(
         state.currentRouteId!,
@@ -629,7 +644,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
       const g = this.computeG(currentCandidate, neighborPortId)
       if (!Number.isFinite(g)) continue
-      const h = this.computeH(neighborPortId)
 
       const nextRegionId =
         topology.incidentPortRegion[neighborPortId][0] ===
@@ -643,6 +657,8 @@ export class TinyHyperGraphSolver extends BaseSolver {
       ) {
         continue
       }
+
+      const h = this.computeH(neighborPortId, nextRegionId)
 
       const newCandidate = {
         prevRegionId: currentCandidate.nextRegionId,
@@ -1529,15 +1545,33 @@ export class TinyHyperGraphSolver extends BaseSolver {
     this.logNeverSuccessfullyRoutedRoutes()
   }
 
-  computeH(neighborPortId: PortId): number {
+  computeH(neighborPortId: PortId, nextRegionId: RegionId): number {
+    const routeId = this.state.currentRouteId!
     const precomputedHCost = this.problemSetup.portHCostToEndOfRoute
-    if (precomputedHCost) {
-      return precomputedHCost[
-        neighborPortId * this.problem.routeCount + this.state.currentRouteId!
-      ]
+    const directDistanceCost = precomputedHCost
+      ? precomputedHCost[neighborPortId * this.problem.routeCount + routeId]!
+      : this.computeDirectDistanceHeuristic(neighborPortId, routeId)
+    const directedHopCountToEnd = this.problemSetup.directedHopCountToEnd
+    if (directedHopCountToEnd) {
+      const directedHopCount = getDirectedRouteHopCount(
+        this.topology,
+        directedHopCountToEnd,
+        neighborPortId,
+        nextRegionId,
+      )
+      if (directedHopCount >= 0) {
+        return directDistanceCost + directedHopCount * this.DISTANCE_TO_COST
+      }
     }
 
-    const endPortId = this.problem.routeEndPort[this.state.currentRouteId!]
+    return directDistanceCost
+  }
+
+  private computeDirectDistanceHeuristic(
+    neighborPortId: PortId,
+    routeId: RouteId,
+  ): number {
+    const endPortId = this.problem.routeEndPort[routeId]!
     const dx =
       this.getPortRoutingCostX(neighborPortId) -
       this.getPortRoutingCostX(endPortId)
