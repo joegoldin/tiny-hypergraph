@@ -39,7 +39,7 @@ type RelaxedSearchHopData = {
 }
 
 const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
-const RETRY_HEURISTIC_WEIGHT = 2
+const RETRY_HEURISTIC_WEIGHT = 4
 
 export type FailedOwnerPairCount = {
   failedRouteId: RouteId
