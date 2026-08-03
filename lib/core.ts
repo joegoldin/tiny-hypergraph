@@ -33,7 +33,7 @@ import { visualizeTinyGraph } from "./visualizeTinyGraph"
 export type { StaticallyUnroutableRouteSummary } from "./static-reachability"
 export type { TinyHyperGraphInitialAssignment } from "./initialAssignments"
 
-const GREEDY_FINAL_ROUTE_MAX_ITERATIONS = 50e3
+const GREEDY_FINAL_ROUTE_MAX_ITERATIONS_PER_ROUTE = 50e3
 
 export const createEmptyRegionIntersectionCache =
   (): RegionIntersectionCache => ({
@@ -1208,6 +1208,8 @@ export class TinyHyperGraphSolver extends BaseSolver {
     if (remainingRouteIds.length === 0) {
       return false
     }
+    const greedyFinalRouteMaxIterations =
+      GREEDY_FINAL_ROUTE_MAX_ITERATIONS_PER_ROUTE * remainingRouteIds.length
 
     const startingSnapshot = cloneSolvedStateSnapshot({
       portAssignment: this.state.portAssignment,
@@ -1236,7 +1238,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
           ...getTinyHyperGraphSolverOptions(this),
           ACCEPT_BEST_SOLUTION_ON_TIMEOUT: false,
           GREEDY_FINAL_ROUTE_ITERS: 0,
-          MAX_ITERATIONS: GREEDY_FINAL_ROUTE_MAX_ITERATIONS,
+          MAX_ITERATIONS: greedyFinalRouteMaxIterations,
           RIP_THRESHOLD_RAMP_ATTEMPTS: 0,
           STATIC_REACHABILITY_PRECHECK: false,
         },
@@ -1267,7 +1269,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
         acceptedGreedyFinalRouteOnTimeout: true,
         greedyFinalRouteIter,
         greedyFinalRouteRemainingRouteCount: remainingRouteIds.length,
-        greedyFinalRouteMaxIterations: GREEDY_FINAL_ROUTE_MAX_ITERATIONS,
+        greedyFinalRouteMaxIterations,
         neverSuccessfullyRoutedRouteCount: 0,
         maxRegionCost: this.bestSolvedStateSummary.maxRegionCost,
         totalRegionCost: this.bestSolvedStateSummary.totalRegionCost,
@@ -1284,7 +1286,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       ...this.stats,
       greedyFinalRouteAttemptCount: greedyFinalRouteIters,
       greedyFinalRouteRemainingRouteCount: remainingRouteIds.length,
-      greedyFinalRouteMaxIterations: GREEDY_FINAL_ROUTE_MAX_ITERATIONS,
+      greedyFinalRouteMaxIterations,
     }
 
     return false
