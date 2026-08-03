@@ -38,6 +38,12 @@ type RelaxedSearchHopData = {
   resources: SelectiveReripBlockerResource[]
 }
 
+type RelaxedBlockerPathResult = DistinctOwnerBlockerSearchResult<
+  RelaxedSearchState,
+  RouteId,
+  RelaxedSearchHopData
+>
+
 const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
 
 export type FailedOwnerPairCount = {
@@ -156,6 +162,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   private selectiveReripCongestionUpdateCount = 0
 
+  private readonly displacedRouteIdsPendingRetry = new Set<RouteId>()
+
   constructor(
     topology: TinyHyperGraphTopology,
     problem: TinyHyperGraphProblem,
@@ -185,7 +193,46 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     }
   }
 
+  /**
+   * A selectively ripped route already had a valid path before another route
+   * displaced it. Check whether that displacement still blocks every path
+   * before repeating the full constrained search.
+   */
+  override _step(): void {
+    const nextRouteId = this.state.unroutedRoutes[0]
+    const retryRouteId =
+      this.state.currentRouteId === undefined &&
+      nextRouteId !== undefined &&
+      this.displacedRouteIdsPendingRetry.has(nextRouteId)
+        ? nextRouteId
+        : undefined
+
+    super._step()
+
+    if (retryRouteId !== undefined) {
+      this.displacedRouteIdsPendingRetry.delete(retryRouteId)
+    }
+    if (
+      retryRouteId === undefined ||
+      this.state.currentRouteId !== retryRouteId ||
+      this.routeSuccessCountByRouteId[retryRouteId]! === 0
+    ) {
+      return
+    }
+
+    const directPath = this.findRelaxedBlockerPath()
+    if (!directPath.found || directPath.owners.size === 0) {
+      return
+    }
+
+    this.handleBlockedRoute(directPath)
+  }
+
   override onOutOfCandidates(): void {
+    this.handleBlockedRoute(this.findRelaxedBlockerPath())
+  }
+
+  private handleBlockedRoute(directPath: RelaxedBlockerPathResult): void {
     const failedRouteId = this.state.currentRouteId
     if (failedRouteId === undefined) {
       throw new Error(
@@ -193,8 +240,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       )
     }
 
-    const directPath = this.findRelaxedBlockerPath()
     if (!directPath.found || directPath.owners.size === 0) {
+      this.displacedRouteIdsPendingRetry.clear()
       this.selectiveReripStats.globalReripCount += 1
       this.selectiveReripStats.globalReripReason = !directPath.found
         ? directPath.reason
@@ -268,6 +315,9 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       this.addCongestionCostForSelectiveRerip()
       this.selectiveReripCongestionUpdateCount += 1
     }
+    for (const rippedRouteId of rippedRouteIds) {
+      this.displacedRouteIdsPendingRetry.add(rippedRouteId)
+    }
     this.rebuildCommittedState(rippedRouteIds)
     this.state.ripCount += 1
     this.state.currentRouteId = undefined
@@ -309,11 +359,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   protected findRelaxedBlockerPath(
     forbiddenOwnerRouteIds: ReadonlySet<RouteId> = new Set<RouteId>(),
-  ): DistinctOwnerBlockerSearchResult<
-    RelaxedSearchState,
-    RouteId,
-    RelaxedSearchHopData
-  > {
+  ): RelaxedBlockerPathResult {
     const routeId = this.state.currentRouteId
     const routeNetId = this.state.currentRouteNetId
     if (routeId === undefined || routeNetId === undefined) {
