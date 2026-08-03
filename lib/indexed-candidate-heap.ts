@@ -1,5 +1,8 @@
 import type { Candidate } from "./core"
 
+const compareCandidates = (left: Candidate, right: Candidate): number =>
+  left.f - right.f || left.h - right.h
+
 /**
  * Candidate queue keyed by the directed hop represented by a candidate.
  *
@@ -38,7 +41,7 @@ export class IndexedCandidateHeap {
       if (candidate.g >= existingCandidate.g) return
 
       this.items[existingIndex] = candidate
-      if (candidate.f <= existingCandidate.f) {
+      if (compareCandidates(candidate, existingCandidate) <= 0) {
         this.siftUp(existingIndex)
       } else {
         this.siftDown(existingIndex)
@@ -85,7 +88,11 @@ export class IndexedCandidateHeap {
     let index = startIndex
     while (index > 0) {
       const parentIndex = (index - 1) >> 1
-      if (this.items[parentIndex]!.f <= this.items[index]!.f) return
+      if (
+        compareCandidates(this.items[parentIndex]!, this.items[index]!) <= 0
+      ) {
+        return
+      }
       this.swap(index, parentIndex)
       index = parentIndex
     }
@@ -100,10 +107,20 @@ export class IndexedCandidateHeap {
       const rightChildIndex = leftChildIndex + 1
       const smallestChildIndex =
         rightChildIndex < this.items.length &&
-        this.items[rightChildIndex]!.f < this.items[leftChildIndex]!.f
+        compareCandidates(
+          this.items[rightChildIndex]!,
+          this.items[leftChildIndex]!,
+        ) < 0
           ? rightChildIndex
           : leftChildIndex
-      if (this.items[index]!.f <= this.items[smallestChildIndex]!.f) return
+      if (
+        compareCandidates(
+          this.items[index]!,
+          this.items[smallestChildIndex]!,
+        ) <= 0
+      ) {
+        return
+      }
       this.swap(index, smallestChildIndex)
       index = smallestChildIndex
     }

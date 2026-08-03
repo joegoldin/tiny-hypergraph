@@ -358,7 +358,7 @@ export const getTinyHyperGraphSolverOptions = (
 })
 
 const compareCandidatesByF = (left: Candidate, right: Candidate) =>
-  left.f - right.f
+  left.f - right.f || left.h - right.h
 
 interface SegmentGeometryScratch {
   lesserAngle: number
