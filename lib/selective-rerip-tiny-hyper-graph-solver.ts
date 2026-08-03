@@ -138,7 +138,7 @@ export function orderRoutesAfterSelectiveRerip(params: {
     (routeId) => routeId !== params.failedRouteId,
   )
 
-  return [params.failedRouteId, ...pendingRouteIds, ...rippedRouteIds]
+  return [params.failedRouteId, ...rippedRouteIds, ...pendingRouteIds]
 }
 
 /**
