@@ -125,6 +125,21 @@ export function selectOwnerRouteIdsToRip(params: {
   return rippedRouteIds
 }
 
+export function expandOwnerRoutesToCommittedNetBundles(params: {
+  ownerRouteIds: ReadonlySet<RouteId>
+  committedRouteIds: readonly RouteId[]
+  routeNet: ArrayLike<number>
+}): Set<RouteId> {
+  const ownerNetIds = new Set(
+    [...params.ownerRouteIds].map((routeId) => params.routeNet[routeId]),
+  )
+  return new Set(
+    params.committedRouteIds.filter((routeId) =>
+      ownerNetIds.has(params.routeNet[routeId]),
+    ),
+  )
+}
+
 export function orderRoutesAfterSelectiveRerip(params: {
   failedRouteId: RouteId
   pendingRouteIds: readonly RouteId[]
@@ -253,10 +268,22 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     const alternateOwnerRouteIds = alternatePath?.found
       ? [...alternatePath.owners]
       : undefined
-    const rippedRouteIds = selectOwnerRouteIdsToRip({
+    const directRippedRouteIds = selectOwnerRouteIdsToRip({
       failedRouteId,
       directOwnerRouteIds,
       alternateOwnerRouteIds,
+    })
+    const committedRouteIds = [
+      ...new Set(
+        this.state.regionSegments.flatMap((segments) =>
+          segments.map(([routeId]) => routeId),
+        ),
+      ),
+    ].sort((a, b) => a - b)
+    const rippedRouteIds = expandOwnerRoutesToCommittedNetBundles({
+      ownerRouteIds: directRippedRouteIds,
+      committedRouteIds,
+      routeNet: this.problem.routeNet,
     })
     const alternateOnlyOwnerRouteIds = (alternateOwnerRouteIds ?? []).filter(
       (ownerRouteId) => !directPath.owners.has(ownerRouteId),

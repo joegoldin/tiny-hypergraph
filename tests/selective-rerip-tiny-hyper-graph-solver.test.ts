@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import {
+  expandOwnerRoutesToCommittedNetBundles,
   orderRoutesAfterSelectiveRerip,
   selectOwnerRouteIdsToRip,
 } from "lib/selective-rerip-tiny-hyper-graph-solver"
@@ -21,6 +22,16 @@ test("selects alternate owners and rejects a failed route as its only blocker", 
   ).toThrow(
     "SelectiveReripTinyHyperGraphSolver: route 1 has blocker resources but no distinct committed owner can be reripped",
   )
+})
+
+test("rerips every committed route in a blocking owner net", () => {
+  expect([
+    ...expandOwnerRoutesToCommittedNetBundles({
+      ownerRouteIds: new Set([2]),
+      committedRouteIds: [0, 1, 2, 4, 5],
+      routeNet: Int32Array.from([8, 3, 8, 4, 8, 2]),
+    }),
+  ]).toEqual([0, 2, 4])
 })
 
 test("keeps pending routes ahead of newly ripped routes", () => {
