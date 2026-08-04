@@ -128,6 +128,9 @@ export interface TinyHyperGraphTopology {
   portY: Float64Array
   portZ: Int32Array
 
+  /** Nearby ports that compete for the same physical boundary clearance. */
+  portConflicts?: PortId[][]
+
   portMetadata?: any[]
 }
 
@@ -743,12 +746,23 @@ export class TinyHyperGraphSolver extends BaseSolver {
   }
 
   isPortReservedForDifferentNet(portId: PortId): boolean {
-    const reservedNetId =
-      this.problemSetup.portEndpointReservationNetId[portId] ?? -1
-    return (
-      reservedNetId === -2 ||
-      (reservedNetId !== -1 && reservedNetId !== this.state.currentRouteNetId)
-    )
+    const competingPortIds = [
+      portId,
+      ...(this.topology.portConflicts?.[portId] ?? []),
+    ]
+    return competingPortIds.some((competingPortId) => {
+      const reservedNetId =
+        this.problemSetup.portEndpointReservationNetId[competingPortId] ?? -1
+      const assignedNetId =
+        this.state.portAssignment[competingPortId] ?? -1
+      return (
+        reservedNetId === -2 ||
+        (reservedNetId !== -1 &&
+          reservedNetId !== this.state.currentRouteNetId) ||
+        (assignedNetId !== -1 &&
+          assignedNetId !== this.state.currentRouteNetId)
+      )
+    })
   }
 
   isRegionReservedForDifferentNet(regionId: RegionId): boolean {

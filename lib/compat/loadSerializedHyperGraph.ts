@@ -400,6 +400,16 @@ export const loadSerializedHyperGraph = (
   const portRoutingCostX = new Float64Array(portCount)
   const portRoutingCostY = new Float64Array(portCount)
   const portZ = new Int32Array(portCount)
+  const portConflicts: number[][] = filteredHyperGraph.ports.map((port) => {
+    const conflictPortIds = port.d?.physicalConflictPortIds
+    if (!Array.isArray(conflictPortIds)) return []
+
+    return conflictPortIds.flatMap((conflictPortId) => {
+      if (typeof conflictPortId !== "string") return []
+      const conflictPortIndex = portIdToIndex.get(conflictPortId)
+      return conflictPortIndex === undefined ? [] : [conflictPortIndex]
+    })
+  })
 
   filteredHyperGraph.ports.forEach((port, portIndex) => {
     const region1Index = regionIdToIndex.get(port.region1Id)
@@ -575,6 +585,7 @@ export const loadSerializedHyperGraph = (
     portRoutingCostX,
     portRoutingCostY,
     portZ,
+    portConflicts,
     portMetadata,
   }
 

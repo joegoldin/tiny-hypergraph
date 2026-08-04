@@ -34,6 +34,7 @@ export interface DuplicateCongestedPortSolverReport {
   /** Number of distinct electrical nets using each port. */
   portUseCounts: Record<string, number>
   duplicatedPorts: DuplicatedPortSummary[]
+  physicalConflictPairCount?: number
 }
 
 interface Point {
@@ -368,6 +369,63 @@ const insertDuplicatePortIdsAfterSource = (
   pointIds.splice(insertionIndex + 1, 0, ...duplicatePortIds)
 }
 
+const annotatePhysicalPortConflicts = (
+  ports: SerializedPort[],
+  minimumSpacing: number,
+): number => {
+  const portsByBoundary = new Map<string, SerializedPort[]>()
+  for (const port of ports) {
+    const boundaryKey = getPhysicalBoundaryKey(port)
+    const boundaryPorts = portsByBoundary.get(boundaryKey) ?? []
+    boundaryPorts.push(port)
+    portsByBoundary.set(boundaryKey, boundaryPorts)
+  }
+
+  const conflictsByPortId = new Map<string, Set<string>>()
+  let conflictPairCount = 0
+  for (const boundaryPorts of portsByBoundary.values()) {
+    for (let leftIndex = 0; leftIndex < boundaryPorts.length; leftIndex++) {
+      for (
+        let rightIndex = leftIndex + 1;
+        rightIndex < boundaryPorts.length;
+        rightIndex++
+      ) {
+        const leftPort = boundaryPorts[leftIndex]!
+        const rightPort = boundaryPorts[rightIndex]!
+        if (
+          getDistance(getPortPoint(leftPort), getPortPoint(rightPort)) >=
+          minimumSpacing - EPSILON
+        ) {
+          continue
+        }
+
+        const leftConflicts =
+          conflictsByPortId.get(leftPort.portId) ?? new Set<string>()
+        leftConflicts.add(rightPort.portId)
+        conflictsByPortId.set(leftPort.portId, leftConflicts)
+        const rightConflicts =
+          conflictsByPortId.get(rightPort.portId) ?? new Set<string>()
+        rightConflicts.add(leftPort.portId)
+        conflictsByPortId.set(rightPort.portId, rightConflicts)
+        conflictPairCount += 1
+      }
+    }
+  }
+
+  for (const port of ports) {
+    const portData = toObjectRecord(port.d)
+    const conflicts = [...(conflictsByPortId.get(port.portId) ?? [])].sort()
+    if (conflicts.length > 0) {
+      portData.physicalConflictPortIds = conflicts
+    } else {
+      delete portData.physicalConflictPortIds
+    }
+    port.d = portData
+  }
+
+  return conflictPairCount
+}
+
 const getSerializedPortId = (
   topology: TinyHyperGraphTopology,
   portId: PortId,
@@ -655,9 +713,20 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
       })
     }
 
+    const physicalConflictPairCount =
+      minimumDuplicatePortSpacing === undefined
+        ? undefined
+        : annotatePhysicalPortConflicts(
+            ports,
+            minimumDuplicatePortSpacing,
+          )
+
     this.report = {
       portUseCounts: Object.fromEntries([...portUseCounts.entries()].sort()),
       duplicatedPorts,
+      ...(physicalConflictPairCount === undefined
+        ? {}
+        : { physicalConflictPairCount }),
     }
 
     return {
@@ -683,6 +752,8 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
           (sum, duplicatedPort) => sum + duplicatedPort.duplicatePortIds.length,
           0,
         ),
+        physicalConflictPairCount:
+          this.report.physicalConflictPairCount ?? 0,
       }
       this.solved = true
     } catch (error) {
