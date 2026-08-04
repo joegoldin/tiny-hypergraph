@@ -1575,14 +1575,4 @@ class GreedyFinalRouteSolver extends TinyHyperGraphSolver {
     this.failed = true
     this.error = "GreedyFinalRouteSolver ran out of candidates"
   }
-
-  override computeG(
-    currentCandidate: Candidate,
-    neighborPortId: PortId,
-  ): number {
-    const constrainedCost = super.computeG(currentCandidate, neighborPortId)
-    return Number.isFinite(constrainedCost)
-      ? currentCandidate.g
-      : constrainedCost
-  }
 }
