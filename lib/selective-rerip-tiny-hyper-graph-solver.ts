@@ -51,6 +51,15 @@ export type BlockerRegionSegments = {
   segments: Array<[RouteId, PortId, PortId]>
 }
 
+export type BlockerPortSegments = {
+  portId: PortId
+  assignedNetId: number
+  segments: Array<{
+    regionId: RegionId
+    segment: [RouteId, PortId, PortId]
+  }>
+}
+
 export type SelectiveReripTinyHyperGraphStats = {
   selectiveRipCount: number
   selectivelyRippedRouteCount: number
@@ -64,6 +73,7 @@ export type SelectiveReripTinyHyperGraphStats = {
   lastFailedRouteId?: RouteId
   lastDirectBlockerResources: SelectiveReripBlockerResource[]
   lastDirectBlockerRegionSegments: BlockerRegionSegments[]
+  lastDirectBlockerPortSegments: BlockerPortSegments[]
   lastDirectOwnerRouteIds: RouteId[]
   lastRepeatedOwnerRouteIds: RouteId[]
   lastAlternateOwnerRouteIds: RouteId[]
@@ -84,6 +94,7 @@ const createInitialSelectiveReripStats =
     failedOwnerPairs: [],
     lastDirectBlockerResources: [],
     lastDirectBlockerRegionSegments: [],
+    lastDirectBlockerPortSegments: [],
     lastDirectOwnerRouteIds: [],
     lastRepeatedOwnerRouteIds: [],
     lastAlternateOwnerRouteIds: [],
@@ -195,6 +206,17 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
             ),
           }),
         ),
+      lastDirectBlockerPortSegments:
+        this.selectiveReripStats.lastDirectBlockerPortSegments.map(
+          ({ portId, assignedNetId, segments }) => ({
+            portId,
+            assignedNetId,
+            segments: segments.map(({ regionId, segment }) => ({
+              regionId,
+              segment: [...segment] as [RouteId, PortId, PortId],
+            })),
+          }),
+        ),
       lastDirectOwnerRouteIds: [
         ...this.selectiveReripStats.lastDirectOwnerRouteIds,
       ],
@@ -225,6 +247,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       this.selectiveReripStats.lastFailedRouteId = failedRouteId
       this.selectiveReripStats.lastDirectBlockerResources = []
       this.selectiveReripStats.lastDirectBlockerRegionSegments = []
+      this.selectiveReripStats.lastDirectBlockerPortSegments = []
       this.selectiveReripStats.lastDirectOwnerRouteIds = []
       this.selectiveReripStats.lastRepeatedOwnerRouteIds = []
       this.selectiveReripStats.lastAlternateOwnerRouteIds = []
@@ -255,6 +278,29 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       regionId,
       segments: (this.state.regionSegments[regionId] ?? []).map(
         (segment) => [...segment] as [RouteId, PortId, PortId],
+      ),
+    }))
+    const blockerPortIds = new Set(
+      this.selectiveReripStats.lastDirectBlockerResources.flatMap(
+        (resource) => (resource.kind === "port" ? [resource.portId] : []),
+      ),
+    )
+    this.selectiveReripStats.lastDirectBlockerPortSegments = [
+      ...blockerPortIds,
+    ].map((portId) => ({
+      portId,
+      assignedNetId: this.state.portAssignment[portId]!,
+      segments: this.state.regionSegments.flatMap((segments, regionId) =>
+        segments.flatMap((segment) =>
+          segment[1] === portId || segment[2] === portId
+            ? [
+                {
+                  regionId,
+                  segment: [...segment] as [RouteId, PortId, PortId],
+                },
+              ]
+            : [],
+        ),
       ),
     }))
     const repeatedOwnerRouteIds: RouteId[] = []
