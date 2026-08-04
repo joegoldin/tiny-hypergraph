@@ -1,5 +1,6 @@
 import {
   createEmptyRegionIntersectionCache,
+  type Candidate,
   type TinyHyperGraphProblem,
   type TinyHyperGraphSolverOptions,
   type TinyHyperGraphTopology,
@@ -68,6 +69,8 @@ export type RouteSearchIterationCount = {
 export type SelectiveReripTinyHyperGraphStats = {
   selectiveRipCount: number
   selectivelyRippedRouteCount: number
+  learnedPortResourceCount: number
+  maxLearnedPortPenalty: number
   globalReripCount: number
   globalReripReason?: "no_path" | "expansion_limit" | "no_blocker_path"
   alternateBlockerSearchCount: number
@@ -91,6 +94,8 @@ const createInitialSelectiveReripStats =
   (): SelectiveReripTinyHyperGraphStats => ({
     selectiveRipCount: 0,
     selectivelyRippedRouteCount: 0,
+    learnedPortResourceCount: 0,
+    maxLearnedPortPenalty: 0,
     globalReripCount: 0,
     alternateBlockerSearchCount: 0,
     alternateOwnerCount: 0,
@@ -179,6 +184,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   private readonly selectiveReripStats = createInitialSelectiveReripStats()
 
+  private readonly learnedPortPenalty: Float64Array
+
   private selectiveReripCongestionUpdateCount = 0
 
   private readonly routeSearchIterationCountByRouteId: Uint32Array
@@ -195,6 +202,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     options?: TinyHyperGraphSolverOptions,
   ) {
     super(topology, problem, options)
+    this.learnedPortPenalty = new Float64Array(topology.portCount)
     this.routeSearchIterationCountByRouteId = new Uint32Array(
       problem.routeCount,
     )
@@ -270,6 +278,15 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       this.countedRouteId = undefined
       this.currentRouteSearchIterationCount = 0
     }
+  }
+
+  override computeG(
+    currentCandidate: Candidate,
+    neighborPortId: PortId,
+  ): number {
+    const baseCost = super.computeG(currentCandidate, neighborPortId)
+    if (!Number.isFinite(baseCost)) return baseCost
+    return baseCost + this.learnedPortPenalty[neighborPortId]!
   }
 
   override onOutOfCandidates(): void {
@@ -349,6 +366,23 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       directOwnerRouteIds,
       alternateOwnerRouteIds,
     })
+    const selectedPath = alternatePath?.found ? alternatePath : directPath
+    const blockedPortIds = new Set<PortId>()
+    for (const hop of selectedPath.hops) {
+      for (const resource of hop.data?.resources ?? []) {
+        if (resource.kind === "port") blockedPortIds.add(resource.portId)
+      }
+    }
+    for (const portId of blockedPortIds) {
+      if (this.learnedPortPenalty[portId] === 0) {
+        this.selectiveReripStats.learnedPortResourceCount += 1
+      }
+      this.learnedPortPenalty[portId] += 1
+      this.selectiveReripStats.maxLearnedPortPenalty = Math.max(
+        this.selectiveReripStats.maxLearnedPortPenalty,
+        this.learnedPortPenalty[portId]!,
+      )
+    }
     const alternateOnlyOwnerRouteIds = (alternateOwnerRouteIds ?? []).filter(
       (ownerRouteId) => !directPath.owners.has(ownerRouteId),
     )
