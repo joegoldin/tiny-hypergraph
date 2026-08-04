@@ -70,6 +70,7 @@ export type SelectiveReripTinyHyperGraphStats = {
   selectiveRipCount: number
   selectivelyRippedRouteCount: number
   learnedPortResourceCount: number
+  learnedPortConflictCost: number
   maxLearnedPortPenalty: number
   globalReripCount: number
   globalReripReason?: "no_path" | "expansion_limit" | "no_blocker_path"
@@ -95,6 +96,7 @@ const createInitialSelectiveReripStats =
     selectiveRipCount: 0,
     selectivelyRippedRouteCount: 0,
     learnedPortResourceCount: 0,
+    learnedPortConflictCost: 0,
     maxLearnedPortPenalty: 0,
     globalReripCount: 0,
     alternateBlockerSearchCount: 0,
@@ -203,6 +205,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
   ) {
     super(topology, problem, options)
     this.learnedPortPenalty = new Float64Array(topology.portCount)
+    this.selectiveReripStats.learnedPortConflictCost =
+      this.SELECTIVE_RERIP_PORT_CONFLICT_COST
     this.routeSearchIterationCountByRouteId = new Uint32Array(
       problem.routeCount,
     )
@@ -377,7 +381,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       if (this.learnedPortPenalty[portId] === 0) {
         this.selectiveReripStats.learnedPortResourceCount += 1
       }
-      this.learnedPortPenalty[portId] += 1
+      this.learnedPortPenalty[portId] +=
+        this.SELECTIVE_RERIP_PORT_CONFLICT_COST
       this.selectiveReripStats.maxLearnedPortPenalty = Math.max(
         this.selectiveReripStats.maxLearnedPortPenalty,
         this.learnedPortPenalty[portId]!,
