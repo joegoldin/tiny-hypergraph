@@ -56,7 +56,11 @@ export type SelectiveReripTinyHyperGraphStats = {
   selectiveRipCount: number
   selectivelyRippedRouteCount: number
   globalReripCount: number
-  globalReripReason?: "no_path" | "expansion_limit" | "no_blocker_path"
+  globalReripReason?:
+    | "no_path"
+    | "expansion_limit"
+    | "no_blocker_path"
+    | "no_commit_progress"
   alternateBlockerSearchCount: number
   alternateOwnerCount: number
   failedOwnerPairCount: number
@@ -166,6 +170,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   private selectiveReripCongestionUpdateCount = 0
 
+  private committedRouteCountAtLastSelectiveFailure: number | undefined
+
   private readonly routeSearchIterationCountByRouteId: Uint32Array
 
   private readonly maxRouteSearchIterationCountByRouteId: Uint32Array
@@ -260,6 +266,28 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
         "SelectiveReripTinyHyperGraphSolver: candidate search exhausted without a current route",
       )
     }
+
+    const committedRouteCount =
+      this.problem.routeCount - this.state.unroutedRoutes.length - 1
+    if (
+      this.committedRouteCountAtLastSelectiveFailure !== undefined &&
+      committedRouteCount <=
+        this.committedRouteCountAtLastSelectiveFailure
+    ) {
+      this.selectiveReripStats.globalReripCount += 1
+      this.selectiveReripStats.globalReripReason = "no_commit_progress"
+      this.selectiveReripStats.lastFailedRouteId = failedRouteId
+      this.selectiveReripStats.lastDirectOwnerRouteIds = []
+      this.selectiveReripStats.lastRepeatedOwnerRouteIds = []
+      this.selectiveReripStats.lastAlternateOwnerRouteIds = []
+      this.selectiveReripStats.lastRippedRouteIds = []
+      this.selectiveReripStats.lastRelaxedSearchExpandedLabelCount = 0
+      this.selectiveReripStats.lastAlternateSearchExpandedLabelCount = 0
+      super.onOutOfCandidates()
+      this.publishSelectiveReripStats()
+      return
+    }
+    this.committedRouteCountAtLastSelectiveFailure = committedRouteCount
 
     const directPath = this.findRelaxedBlockerPath()
     if (!directPath.found || directPath.owners.size === 0) {
@@ -364,6 +392,11 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     this.selectiveReripStats.lastAlternateSearchExpandedLabelCount =
       alternatePath?.expandedLabelCount ?? 0
     this.publishSelectiveReripStats()
+  }
+
+  override resetRoutingStateForRerip(): void {
+    super.resetRoutingStateForRerip()
+    this.committedRouteCountAtLastSelectiveFailure = undefined
   }
 
   private addCongestionCostForSelectiveRerip(): void {
