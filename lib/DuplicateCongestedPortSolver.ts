@@ -566,6 +566,9 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
       const availableLaneCount = physicalLanePoints?.length
       const capacityIsInsufficient =
         availableLaneCount !== undefined && availableLaneCount < useCount
+      const capacityDemandPenalty = capacityIsInsufficient
+        ? useCount / Math.max(1, availableLaneCount) - 1
+        : 0
       const duplicateCount = capacityIsInsufficient
         ? Math.max(0, availableLaneCount - 1)
         : useCount - 1
@@ -579,6 +582,11 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
         regionById,
       )
       const sourcePoint = getPortPoint(sourcePort)
+      if (capacityDemandPenalty > 0) {
+        const sourcePortData = toObjectRecord(sourcePort.d)
+        sourcePortData.routingCostPenalty = capacityDemandPenalty
+        sourcePort.d = sourcePortData
+      }
       if (physicalLanePoints?.[0]) {
         const sourcePortData = toObjectRecord(sourcePort.d)
         if (!capacityIsInsufficient) {

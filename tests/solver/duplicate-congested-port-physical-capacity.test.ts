@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test"
 import type { SerializedHyperGraph } from "@tscircuit/hypergraph"
-import { DuplicateCongestedPortSolver } from "lib/index"
+import {
+  DuplicateCongestedPortSolver,
+  loadSerializedHyperGraph,
+} from "lib/index"
 
 const createRegion = (
   regionId: string,
@@ -101,4 +104,19 @@ test("limits duplicated ports to the physical capacity of their boundary", () =>
   expect(
     Math.abs(Number(lanePorts[0]!.d?.y) - Number(lanePorts[1]!.d?.y)),
   ).toBeCloseTo(0.2)
+  expect(
+    lanePorts.map((port) => Number(port.d?.routingCostPenalty)),
+  ).toEqual([2.5, 2.5])
+
+  const loaded = loadSerializedHyperGraph(output)
+  const lanePortIndexes = loaded.topology.portMetadata
+    ?.map((metadata, portId) => ({ metadata, portId }))
+    .filter(
+      ({ metadata }) =>
+        metadata.serializedPortId === "shared-choke" ||
+        metadata.duplicatedFromPortId === "shared-choke",
+    )
+    .map(({ portId }) => portId)
+  expect(lanePortIndexes?.map((portId) => loaded.problem.portPenalty?.[portId]))
+    .toEqual([2.5, 2.5])
 })

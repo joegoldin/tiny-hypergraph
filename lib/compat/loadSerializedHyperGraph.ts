@@ -221,6 +221,10 @@ const getSerializedPortRoutingCostY = (
   port: SerializedHyperGraph["ports"][number],
 ): number => Number(port.d?.routingCostY ?? port.d?.y ?? 0)
 
+const getSerializedPortRoutingCostPenalty = (
+  port: SerializedHyperGraph["ports"][number],
+): number => Number(port.d?.routingCostPenalty ?? 0)
+
 const computePortAngle = (
   port: SerializedHyperGraph["ports"][number],
   region: SerializedHyperGraph["regions"][number] | undefined,
@@ -399,6 +403,7 @@ export const loadSerializedHyperGraph = (
   const portY = new Float64Array(portCount)
   const portRoutingCostX = new Float64Array(portCount)
   const portRoutingCostY = new Float64Array(portCount)
+  const portPenalty = new Float64Array(portCount)
   const portZ = new Int32Array(portCount)
 
   filteredHyperGraph.ports.forEach((port, portIndex) => {
@@ -416,6 +421,7 @@ export const loadSerializedHyperGraph = (
     portY[portIndex] = getSerializedPortY(port)
     portRoutingCostX[portIndex] = getSerializedPortRoutingCostX(port)
     portRoutingCostY[portIndex] = getSerializedPortRoutingCostY(port)
+    portPenalty[portIndex] = getSerializedPortRoutingCostPenalty(port)
     portZ[portIndex] = getSerializedPortZ(port)
     portAngleForRegion1[portIndex] = computePortAngle(
       port,
@@ -620,6 +626,7 @@ export const loadSerializedHyperGraph = (
     routeEndPort,
     routeNet,
     regionNetId,
+    portPenalty,
     ...(initialAssignments.length > 0 && { initialAssignments }),
   }
 
