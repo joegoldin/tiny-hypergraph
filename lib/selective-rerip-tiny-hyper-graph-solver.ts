@@ -46,6 +46,11 @@ export type FailedOwnerPairCount = {
   count: number
 }
 
+export type BlockerRegionSegments = {
+  regionId: RegionId
+  segments: Array<[RouteId, PortId, PortId]>
+}
+
 export type SelectiveReripTinyHyperGraphStats = {
   selectiveRipCount: number
   selectivelyRippedRouteCount: number
@@ -58,6 +63,7 @@ export type SelectiveReripTinyHyperGraphStats = {
   failedOwnerPairs: FailedOwnerPairCount[]
   lastFailedRouteId?: RouteId
   lastDirectBlockerResources: SelectiveReripBlockerResource[]
+  lastDirectBlockerRegionSegments: BlockerRegionSegments[]
   lastDirectOwnerRouteIds: RouteId[]
   lastRepeatedOwnerRouteIds: RouteId[]
   lastAlternateOwnerRouteIds: RouteId[]
@@ -77,6 +83,7 @@ const createInitialSelectiveReripStats =
     maxFailedOwnerPairCount: 0,
     failedOwnerPairs: [],
     lastDirectBlockerResources: [],
+    lastDirectBlockerRegionSegments: [],
     lastDirectOwnerRouteIds: [],
     lastRepeatedOwnerRouteIds: [],
     lastAlternateOwnerRouteIds: [],
@@ -179,6 +186,15 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
           ...resource,
           owners: [...resource.owners],
         })),
+      lastDirectBlockerRegionSegments:
+        this.selectiveReripStats.lastDirectBlockerRegionSegments.map(
+          ({ regionId, segments }) => ({
+            regionId,
+            segments: segments.map(
+              (segment) => [...segment] as [RouteId, PortId, PortId],
+            ),
+          }),
+        ),
       lastDirectOwnerRouteIds: [
         ...this.selectiveReripStats.lastDirectOwnerRouteIds,
       ],
@@ -208,6 +224,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
         : "no_blocker_path"
       this.selectiveReripStats.lastFailedRouteId = failedRouteId
       this.selectiveReripStats.lastDirectBlockerResources = []
+      this.selectiveReripStats.lastDirectBlockerRegionSegments = []
       this.selectiveReripStats.lastDirectOwnerRouteIds = []
       this.selectiveReripStats.lastRepeatedOwnerRouteIds = []
       this.selectiveReripStats.lastAlternateOwnerRouteIds = []
@@ -224,6 +241,22 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     this.selectiveReripStats.lastDirectBlockerResources = directPath.hops
       .flatMap((hop) => hop.data?.resources ?? [])
       .map((resource) => ({ ...resource, owners: [...resource.owners] }))
+    const blockerRegionIds = new Set(
+      this.selectiveReripStats.lastDirectBlockerResources.flatMap(
+        (resource) =>
+          resource.kind === "same_layer_intersection"
+            ? [resource.regionId]
+            : [],
+      ),
+    )
+    this.selectiveReripStats.lastDirectBlockerRegionSegments = [
+      ...blockerRegionIds,
+    ].map((regionId) => ({
+      regionId,
+      segments: (this.state.regionSegments[regionId] ?? []).map(
+        (segment) => [...segment] as [RouteId, PortId, PortId],
+      ),
+    }))
     const repeatedOwnerRouteIds: RouteId[] = []
     for (const ownerRouteId of directOwnerRouteIds) {
       const count = this.incrementFailedOwnerPair(failedRouteId, ownerRouteId)
