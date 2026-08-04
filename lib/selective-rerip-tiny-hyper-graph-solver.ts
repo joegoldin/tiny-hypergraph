@@ -52,6 +52,8 @@ type RelaxedSearchHopData = {
 }
 
 const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
+const RETRY_SEARCH_BUDGET_MULTIPLIER = 4
+const MIN_RETRY_SEARCH_ITERATIONS = 16_000
 
 export type FailedOwnerPairCount = {
   failedRouteId: RouteId
@@ -87,6 +89,7 @@ export type SelectiveReripTinyHyperGraphStats = {
   topRouteSearchIterationCounts: RouteSearchIterationCount[]
   boundaryGroupReripCount: number
   boundaryGroupAdditionalOwnerCount: number
+  retrySearchLimitReripCount: number
 }
 
 const createInitialSelectiveReripStats =
@@ -110,6 +113,7 @@ const createInitialSelectiveReripStats =
     topRouteSearchIterationCounts: [],
     boundaryGroupReripCount: 0,
     boundaryGroupAdditionalOwnerCount: 0,
+    retrySearchLimitReripCount: 0,
   })
 
 export function orderConnectionsByNetCardinality<TConnection>(
@@ -193,6 +197,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   private countedRouteId: RouteId | undefined
 
+  private ignoreRetrySearchLimitForCurrentAttempt = false
+
   constructor(
     topology: TinyHyperGraphTopology,
     problem: TinyHyperGraphProblem,
@@ -259,6 +265,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       if (this.countedRouteId !== routeId) {
         this.countedRouteId = routeId
         this.currentRouteSearchIterationCount = 0
+        this.ignoreRetrySearchLimitForCurrentAttempt = false
       }
       this.currentRouteSearchIterationCount += 1
       this.routeSearchIterationCountByRouteId[routeId] += 1
@@ -266,6 +273,31 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
         this.maxRouteSearchIterationCountByRouteId[routeId]!,
         this.currentRouteSearchIterationCount,
       )
+
+      const retrySearchIterationLimit = Math.max(
+        MIN_RETRY_SEARCH_ITERATIONS,
+        Math.ceil(
+          (this.MAX_ITERATIONS / Math.max(1, this.problem.routeCount)) *
+            RETRY_SEARCH_BUDGET_MULTIPLIER,
+        ),
+      )
+      if (
+        this.state.currentRouteId === routeId &&
+        !this.ignoreRetrySearchLimitForCurrentAttempt &&
+        this.routeSuccessCountByRouteId[routeId]! > 0 &&
+        this.currentRouteSearchIterationCount >= retrySearchIterationLimit
+      ) {
+        const directPath = this.findRelaxedBlockerPath()
+        if (directPath.found && directPath.owners.size > 0) {
+          this.selectiveReripStats.retrySearchLimitReripCount += 1
+          this.onOutOfCandidates()
+          this.countedRouteId = undefined
+          this.currentRouteSearchIterationCount = 0
+          this.ignoreRetrySearchLimitForCurrentAttempt = false
+          return
+        }
+        this.ignoreRetrySearchLimitForCurrentAttempt = true
+      }
     }
 
     super._step()
@@ -273,6 +305,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     if (this.state.currentRouteId === undefined) {
       this.countedRouteId = undefined
       this.currentRouteSearchIterationCount = 0
+      this.ignoreRetrySearchLimitForCurrentAttempt = false
     }
   }
 
