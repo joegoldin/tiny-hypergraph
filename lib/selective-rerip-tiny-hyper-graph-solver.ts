@@ -65,6 +65,11 @@ export type RouteSearchIterationCount = {
   maxAttemptIterations: number
 }
 
+export type ConflictComponentRouteOrder = {
+  routeIds: RouteId[]
+  cyclicRouteIds: RouteId[]
+}
+
 export type SelectiveReripTinyHyperGraphStats = {
   selectiveRipCount: number
   selectivelyRippedRouteCount: number
@@ -166,6 +171,69 @@ export function orderRoutesAfterSelectiveRerip(params: {
   return [params.failedRouteId, ...pendingRouteIds, ...rippedRouteIds]
 }
 
+export function orderConflictComponentRoutes(params: {
+  pendingRouteIds: readonly RouteId[]
+  failedOwnerPairs: readonly FailedOwnerPairCount[]
+}): ConflictComponentRouteOrder {
+  const ownersByFailedRouteId = new Map<RouteId, RouteId[]>()
+  for (const { failedRouteId, ownerRouteId } of params.failedOwnerPairs) {
+    const owners = ownersByFailedRouteId.get(failedRouteId) ?? []
+    if (!owners.includes(ownerRouteId)) owners.push(ownerRouteId)
+    ownersByFailedRouteId.set(failedRouteId, owners)
+  }
+
+  const componentRouteIds = [...new Set(params.pendingRouteIds)]
+  const componentRouteIdSet = new Set(componentRouteIds)
+  for (let index = 0; index < componentRouteIds.length; index++) {
+    for (const ownerRouteId of
+      ownersByFailedRouteId.get(componentRouteIds[index]!) ?? []) {
+      if (componentRouteIdSet.has(ownerRouteId)) continue
+      componentRouteIdSet.add(ownerRouteId)
+      componentRouteIds.push(ownerRouteId)
+    }
+  }
+
+  const routeRank = new Map(
+    componentRouteIds.map((routeId, index) => [routeId, index]),
+  )
+  const indegree = new Map(
+    componentRouteIds.map((routeId) => [routeId, 0]),
+  )
+  for (const failedRouteId of componentRouteIds) {
+    for (const ownerRouteId of
+      ownersByFailedRouteId.get(failedRouteId) ?? []) {
+      if (!componentRouteIdSet.has(ownerRouteId)) continue
+      indegree.set(ownerRouteId, (indegree.get(ownerRouteId) ?? 0) + 1)
+    }
+  }
+
+  const readyRouteIds = componentRouteIds.filter(
+    (routeId) => indegree.get(routeId) === 0,
+  )
+  const routeIds: RouteId[] = []
+  while (readyRouteIds.length > 0) {
+    readyRouteIds.sort(
+      (left, right) => routeRank.get(left)! - routeRank.get(right)!,
+    )
+    const routeId = readyRouteIds.shift()!
+    routeIds.push(routeId)
+    for (const ownerRouteId of ownersByFailedRouteId.get(routeId) ?? []) {
+      if (!componentRouteIdSet.has(ownerRouteId)) continue
+      const nextIndegree = indegree.get(ownerRouteId)! - 1
+      indegree.set(ownerRouteId, nextIndegree)
+      if (nextIndegree === 0) readyRouteIds.push(ownerRouteId)
+    }
+  }
+
+  const routedRouteIdSet = new Set(routeIds)
+  return {
+    routeIds,
+    cyclicRouteIds: componentRouteIds.filter(
+      (routeId) => !routedRouteIdSet.has(routeId),
+    ),
+  }
+}
+
 /**
  * Keeps the normal tiny-hypergraph route acceptance policy while replacing a
  * full rerip with a minimal, explicit rerip when the exhausted route has a
@@ -188,6 +256,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
   private currentRouteSearchIterationCount = 0
 
   private countedRouteId: RouteId | undefined
+
+  private conflictComponentFinalRouteSolver?: ConflictComponentFinalRouteSolver
 
   constructor(
     topology: TinyHyperGraphTopology,
@@ -245,6 +315,48 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
         ...this.selectiveReripStats.lastAlternateOwnerRouteIds,
       ],
       lastRippedRouteIds: [...this.selectiveReripStats.lastRippedRouteIds],
+    }
+  }
+
+  protected override getRemainingRouteIdsForGreedyFinalRoute(): RouteId[] {
+    const pendingRouteIds = super.getRemainingRouteIdsForGreedyFinalRoute()
+    const conflictOrder = orderConflictComponentRoutes({
+      pendingRouteIds,
+      failedOwnerPairs: this.getSelectiveReripStats().failedOwnerPairs,
+    })
+    return [...conflictOrder.routeIds, ...conflictOrder.cyclicRouteIds]
+  }
+
+  protected override createGreedyFinalRouteSolver(
+    options: TinyHyperGraphSolverOptions,
+  ): ConflictComponentFinalRouteSolver {
+    const solver = new ConflictComponentFinalRouteSolver(
+      this.topology,
+      this.problem,
+      this.getSelectiveReripStats().failedOwnerPairs,
+      options,
+    )
+    this.conflictComponentFinalRouteSolver = solver
+    return solver
+  }
+
+  override tryFinalAcceptance(): void {
+    super.tryFinalAcceptance()
+    const finalSolver = this.conflictComponentFinalRouteSolver
+    if (!finalSolver) return
+
+    this.stats = {
+      ...this.stats,
+      conflictComponentFinalRouteCount:
+        finalSolver.conflictComponentRouteCount,
+      conflictComponentFinalRouteCycleCount:
+        finalSolver.conflictComponentCycleRouteCount,
+      conflictComponentFinalRouteCommittedRouteCount:
+        finalSolver.getCommittedRouteCount(),
+      conflictComponentFinalRoutePendingRouteCount:
+        finalSolver.state.unroutedRoutes.length +
+        (finalSolver.state.currentRouteId === undefined ? 0 : 1),
+      conflictComponentFinalRouteIterations: finalSolver.iterations,
     }
   }
 
@@ -662,7 +774,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     return secondLesserInsideFirst !== secondGreaterInsideFirst
   }
 
-  private rebuildCommittedState(rippedRouteIds: ReadonlySet<RouteId>): void {
+  protected rebuildCommittedState(rippedRouteIds: ReadonlySet<RouteId>): void {
     this.state.regionSegments = this.state.regionSegments.map((segments) =>
       segments.filter(([routeId]) => !rippedRouteIds.has(routeId)),
     )
@@ -770,5 +882,57 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     return connectionId === undefined
       ? String(routeId)
       : `${routeId} (${String(connectionId)})`
+  }
+}
+
+class ConflictComponentFinalRouteSolver extends SelectiveReripTinyHyperGraphSolver {
+  conflictComponentRouteCount = 0
+  conflictComponentCycleRouteCount = 0
+
+  constructor(
+    topology: TinyHyperGraphTopology,
+    problem: TinyHyperGraphProblem,
+    private readonly failedOwnerPairs: readonly FailedOwnerPairCount[],
+    options?: TinyHyperGraphSolverOptions,
+  ) {
+    super(topology, problem, options)
+  }
+
+  override _setup(): void {
+    const conflictOrder = orderConflictComponentRoutes({
+      pendingRouteIds: this.state.unroutedRoutes,
+      failedOwnerPairs: this.failedOwnerPairs,
+    })
+    this.conflictComponentRouteCount =
+      conflictOrder.routeIds.length + conflictOrder.cyclicRouteIds.length
+    this.conflictComponentCycleRouteCount =
+      conflictOrder.cyclicRouteIds.length
+    if (conflictOrder.cyclicRouteIds.length > 0) {
+      this.failed = true
+      this.error = `ConflictComponentFinalRouteSolver found a dependency cycle containing ${conflictOrder.cyclicRouteIds.length} route(s)`
+      return
+    }
+
+    this.rebuildCommittedState(new Set(conflictOrder.routeIds))
+    this.state.currentRouteId = undefined
+    this.state.currentRouteNetId = undefined
+    this.state.unroutedRoutes = conflictOrder.routeIds
+    this.state.candidateQueue.clear()
+    this.resetCandidateBestCosts()
+    this.state.goalPortId = -1
+    super._setup()
+  }
+
+  getCommittedRouteCount(): number {
+    return new Set(
+      this.state.regionSegments.flatMap((segments) =>
+        segments.map(([routeId]) => routeId),
+      ),
+    ).size
+  }
+
+  override onOutOfCandidates(): void {
+    this.failed = true
+    this.error = "ConflictComponentFinalRouteSolver ran out of candidates"
   }
 }
