@@ -87,24 +87,43 @@ export function orderConnectionsByNetCardinality<TConnection>(
   connections: readonly TConnection[],
   getNetId: (connection: TConnection) => string | number,
 ): TConnection[] {
-  const connectionCountByNetId = new Map<string | number, number>()
-  for (const connection of connections) {
+  const connectionGroupsByNetId = new Map<
+    string | number,
+    { connections: TConnection[]; firstIndex: number }
+  >()
+  for (const [index, connection] of connections.entries()) {
     const netId = getNetId(connection)
-    connectionCountByNetId.set(
-      netId,
-      (connectionCountByNetId.get(netId) ?? 0) + 1,
-    )
+    const group = connectionGroupsByNetId.get(netId)
+    if (group) {
+      group.connections.push(connection)
+    } else {
+      connectionGroupsByNetId.set(netId, {
+        connections: [connection],
+        firstIndex: index,
+      })
+    }
   }
 
-  return connections
-    .map((connection, index) => ({ connection, index }))
+  const orderedGroups = [...connectionGroupsByNetId.values()]
     .sort(
       (left, right) =>
-        (connectionCountByNetId.get(getNetId(right.connection)) ?? 0) -
-          (connectionCountByNetId.get(getNetId(left.connection)) ?? 0) ||
-        left.index - right.index,
+        right.connections.length - left.connections.length ||
+        left.firstIndex - right.firstIndex,
     )
-    .map(({ connection }) => connection)
+  const orderedConnections: TConnection[] = []
+  const largestGroupSize = orderedGroups[0]?.connections.length ?? 0
+  for (
+    let connectionIndex = 0;
+    connectionIndex < largestGroupSize;
+    connectionIndex++
+  ) {
+    for (const group of orderedGroups) {
+      const connection = group.connections[connectionIndex]
+      if (connection !== undefined) orderedConnections.push(connection)
+    }
+  }
+
+  return orderedConnections
 }
 
 export function selectOwnerRouteIdsToRip(params: {

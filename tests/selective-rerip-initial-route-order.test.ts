@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { orderConnectionsByNetCardinality } from "lib/selective-rerip-tiny-hyper-graph-solver"
 
-test("selective rerip routes larger nets first while preserving tie order", () => {
+test("selective rerip interleaves nets while preserving cardinality priority", () => {
   const connections = [
     { id: 0, netId: "a" },
     { id: 1, netId: "b" },
@@ -17,5 +17,5 @@ test("selective rerip routes larger nets first while preserving tie order", () =
       connections,
       (connection) => connection.netId,
     ).map((connection) => connection.id),
-  ).toEqual([0, 2, 5, 1, 4, 3, 6])
+  ).toEqual([0, 1, 3, 6, 2, 4, 5])
 })
