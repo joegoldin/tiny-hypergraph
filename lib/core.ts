@@ -508,24 +508,35 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
   }
 
+  protected getRoutesWithoutPathsUnderCurrentReservations(
+    routeIds: RouteId[],
+    maxPrecheckHops: number,
+  ): StaticallyUnroutableRouteSummary[] {
+    return getStaticallyUnroutableRoutes({
+      topology: this.topology,
+      problem: this.problem,
+      problemSetup: this.problemSetup,
+      portAssignment: this.state.portAssignment,
+      routeIds,
+      maxPrecheckHops,
+      getStartingNextRegionId: (routeId, startingPortId) =>
+        this.getStartingNextRegionId(routeId, startingPortId),
+      getRouteSummary: (routeId) => this.getRouteSummary(routeId),
+    })
+  }
+
   override _setup() {
     void this.problemSetup
 
     if (this.STATIC_REACHABILITY_PRECHECK) {
-      const staticallyUnroutableRoutes = getStaticallyUnroutableRoutes({
-        topology: this.topology,
-        problem: this.problem,
-        problemSetup: this.problemSetup,
-        portAssignment: this.state.portAssignment,
-        routeIds: this.state.unroutedRoutes,
-        maxPrecheckHops: Math.max(
-          0,
-          this.STATIC_REACHABILITY_PRECHECK_MAX_HOPS,
-        ),
-        getStartingNextRegionId: (routeId, startingPortId) =>
-          this.getStartingNextRegionId(routeId, startingPortId),
-        getRouteSummary: (routeId) => this.getRouteSummary(routeId),
-      })
+      const staticallyUnroutableRoutes =
+        this.getRoutesWithoutPathsUnderCurrentReservations(
+          this.state.unroutedRoutes,
+          Math.max(
+            0,
+            this.STATIC_REACHABILITY_PRECHECK_MAX_HOPS,
+          ),
+        )
       this.staticallyUnroutableRoutes = staticallyUnroutableRoutes
       if (staticallyUnroutableRoutes.length > 0) {
         this.failed = true

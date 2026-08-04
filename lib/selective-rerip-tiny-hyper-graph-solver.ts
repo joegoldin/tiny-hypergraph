@@ -85,6 +85,8 @@ export type SelectiveReripTinyHyperGraphStats = {
   lastAlternateSearchExpandedLabelCount: number
   currentRouteSearchIterationCount: number
   topRouteSearchIterationCounts: RouteSearchIterationCount[]
+  currentReservationPrecheckCount: number
+  currentReservationBlockedRouteCount: number
 }
 
 const createInitialSelectiveReripStats =
@@ -106,6 +108,8 @@ const createInitialSelectiveReripStats =
     lastAlternateSearchExpandedLabelCount: 0,
     currentRouteSearchIterationCount: 0,
     topRouteSearchIterationCounts: [],
+    currentReservationPrecheckCount: 0,
+    currentReservationBlockedRouteCount: 0,
   })
 
 export function orderConnectionsByNetCardinality<TConnection>(
@@ -189,6 +193,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   private countedRouteId: RouteId | undefined
 
+  private currentReservationPrecheckedRouteId: RouteId | undefined
+
   constructor(
     topology: TinyHyperGraphTopology,
     problem: TinyHyperGraphProblem,
@@ -249,8 +255,31 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
   }
 
   override _step(): void {
-    const routeId =
-      this.state.currentRouteId ?? this.state.unroutedRoutes[0]
+    const currentRouteId = this.state.currentRouteId
+    // A displaced route was legal before reservations changed. If an exact
+    // reachability check now proves it blocked, rerip its owner without first
+    // exhausting the weighted candidate search.
+    if (
+      currentRouteId !== undefined &&
+      this.routeSuccessCountByRouteId[currentRouteId]! > 0 &&
+      this.currentReservationPrecheckedRouteId !== currentRouteId
+    ) {
+      this.currentReservationPrecheckedRouteId = currentRouteId
+      this.selectiveReripStats.currentReservationPrecheckCount += 1
+      const routeIsBlocked =
+        this.getRoutesWithoutPathsUnderCurrentReservations(
+          [currentRouteId],
+          Number.MAX_SAFE_INTEGER,
+        ).length > 0
+      if (routeIsBlocked) {
+        this.selectiveReripStats.currentReservationBlockedRouteCount += 1
+        this.onOutOfCandidates()
+        this.currentReservationPrecheckedRouteId = undefined
+        return
+      }
+    }
+
+    const routeId = currentRouteId ?? this.state.unroutedRoutes[0]
     if (routeId !== undefined) {
       if (this.countedRouteId !== routeId) {
         this.countedRouteId = routeId
@@ -269,6 +298,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     if (this.state.currentRouteId === undefined) {
       this.countedRouteId = undefined
       this.currentRouteSearchIterationCount = 0
+      this.currentReservationPrecheckedRouteId = undefined
     }
   }
 
