@@ -372,7 +372,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
   private _problemSetup?: TinyHyperGraphProblemSetup
   protected routeAttemptCountByRouteId: Uint32Array
   protected routeSuccessCountByRouteId: Uint32Array
-  protected boundaryLaneGroupByPortId: PortId[][]
+  protected duplicateLaneGroupByPortId: PortId[][]
   protected bestSolvedStateSnapshot?: SolvedStateSnapshot
   protected bestSolvedStateSummary?: RegionCostSummary
   private hasLoggedNeverSuccessfullyRoutedRoutes = false
@@ -433,7 +433,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
     this.routeAttemptCountByRouteId = new Uint32Array(problem.routeCount)
     this.routeSuccessCountByRouteId = new Uint32Array(problem.routeCount)
-    this.boundaryLaneGroupByPortId = this.getBoundaryLaneGroupsByPortId()
+    this.duplicateLaneGroupByPortId = this.getDuplicateLaneGroupsByPortId()
     const initialAssignmentStats = applyInitialAssignments({
       topology,
       problem,
@@ -450,25 +450,40 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
   }
 
-  private getBoundaryLaneGroupsByPortId(): PortId[][] {
-    const groupsByKey = new Map<string, PortId[]>()
+  private getDuplicateLaneGroupsByPortId(): PortId[][] {
+    const duplicatedSourcePortIds = new Set<string>()
     for (let portId = 0; portId < this.topology.portCount; portId++) {
-      const incidentRegions = this.topology.incidentPortRegion[portId]
-      if (incidentRegions?.length !== 2) continue
-      const [firstRegionId, secondRegionId] = incidentRegions
-      const lesserRegionId = Math.min(firstRegionId, secondRegionId)
-      const greaterRegionId = Math.max(firstRegionId, secondRegionId)
-      const key = `${lesserRegionId}:${greaterRegionId}:z${this.topology.portZ[portId]}`
-      const group = groupsByKey.get(key) ?? []
+      const duplicatedFromPortId = this.topology.portMetadata?.[portId]
+        ?.duplicatedFromPortId
+      if (typeof duplicatedFromPortId === "string") {
+        duplicatedSourcePortIds.add(duplicatedFromPortId)
+      }
+    }
+
+    const groupsBySourcePortId = new Map<string, PortId[]>()
+    for (let portId = 0; portId < this.topology.portCount; portId++) {
+      const metadata = this.topology.portMetadata?.[portId]
+      const serializedPortId = metadata?.serializedPortId
+      const duplicatedFromPortId = metadata?.duplicatedFromPortId
+      const sourcePortId =
+        typeof duplicatedFromPortId === "string"
+          ? duplicatedFromPortId
+          : typeof serializedPortId === "string" &&
+              duplicatedSourcePortIds.has(serializedPortId)
+            ? serializedPortId
+            : undefined
+      if (sourcePortId === undefined) continue
+
+      const group = groupsBySourcePortId.get(sourcePortId) ?? []
       group.push(portId)
-      groupsByKey.set(key, group)
+      groupsBySourcePortId.set(sourcePortId, group)
     }
 
     const groupByPortId = Array.from(
       { length: this.topology.portCount },
       () => [] as PortId[],
     )
-    for (const group of groupsByKey.values()) {
+    for (const group of groupsBySourcePortId.values()) {
       if (group.length < 2) continue
       for (const portId of group) groupByPortId[portId] = group
     }
@@ -482,7 +497,9 @@ export class TinyHyperGraphSolver extends BaseSolver {
     const currentNetId = this.state.currentRouteNetId
     if (currentNetId === undefined) return false
 
-    for (const lanePortId of this.boundaryLaneGroupByPortId[freePortId] ?? []) {
+    const duplicateLaneGroup =
+      this.duplicateLaneGroupByPortId[freePortId] ?? []
+    for (const lanePortId of duplicateLaneGroup) {
       if (
         lanePortId === currentCandidate.portId ||
         this.state.portAssignment[lanePortId] !== currentNetId ||
