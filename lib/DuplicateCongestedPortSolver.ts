@@ -581,10 +581,6 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
       const sourcePoint = getPortPoint(sourcePort)
       if (physicalLanePoints?.[0]) {
         const sourcePortData = toObjectRecord(sourcePort.d)
-        if (!capacityIsInsufficient) {
-          sourcePortData.routingCostX = sourcePoint.x
-          sourcePortData.routingCostY = sourcePoint.y
-        }
         sourcePortData.x = physicalLanePoints[0].x
         sourcePortData.y = physicalLanePoints[0].y
         sourcePort.d = sourcePortData
@@ -614,10 +610,6 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
         )
         duplicatedPortData.x = duplicatePoint.x
         duplicatedPortData.y = duplicatePoint.y
-        if (physicalLanePoints && !capacityIsInsufficient) {
-          duplicatedPortData.routingCostX = legacyDuplicatePoint.x
-          duplicatedPortData.routingCostY = legacyDuplicatePoint.y
-        }
         duplicatedPortData.duplicatedFromPortId = sourcePortId
         duplicatedPortData.duplicateIndex = duplicateIndex
         duplicatedPortData.duplicatePortUseCount = useCount
