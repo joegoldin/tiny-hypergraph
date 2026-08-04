@@ -372,6 +372,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
   private _problemSetup?: TinyHyperGraphProblemSetup
   protected routeAttemptCountByRouteId: Uint32Array
   protected routeSuccessCountByRouteId: Uint32Array
+  protected boundaryLaneGroupByPortId: PortId[][]
   protected bestSolvedStateSnapshot?: SolvedStateSnapshot
   protected bestSolvedStateSummary?: RegionCostSummary
   private hasLoggedNeverSuccessfullyRoutedRoutes = false
@@ -432,6 +433,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
     this.routeAttemptCountByRouteId = new Uint32Array(problem.routeCount)
     this.routeSuccessCountByRouteId = new Uint32Array(problem.routeCount)
+    this.boundaryLaneGroupByPortId = this.getBoundaryLaneGroupsByPortId()
     const initialAssignmentStats = applyInitialAssignments({
       topology,
       problem,
@@ -446,6 +448,66 @@ export class TinyHyperGraphSolver extends BaseSolver {
         ...initialAssignmentStats,
       }
     }
+  }
+
+  private getBoundaryLaneGroupsByPortId(): PortId[][] {
+    const groupsByKey = new Map<string, PortId[]>()
+    for (let portId = 0; portId < this.topology.portCount; portId++) {
+      const incidentRegions = this.topology.incidentPortRegion[portId]
+      if (incidentRegions?.length !== 2) continue
+      const [firstRegionId, secondRegionId] = incidentRegions
+      const lesserRegionId = Math.min(firstRegionId, secondRegionId)
+      const greaterRegionId = Math.max(firstRegionId, secondRegionId)
+      const key = `${lesserRegionId}:${greaterRegionId}:z${this.topology.portZ[portId]}`
+      const group = groupsByKey.get(key) ?? []
+      group.push(portId)
+      groupsByKey.set(key, group)
+    }
+
+    const groupByPortId = Array.from(
+      { length: this.topology.portCount },
+      () => [] as PortId[],
+    )
+    for (const group of groupsByKey.values()) {
+      if (group.length < 2) continue
+      for (const portId of group) groupByPortId[portId] = group
+    }
+    return groupByPortId
+  }
+
+  private hasLegalSameNetLaneForHop(
+    currentCandidate: Candidate,
+    freePortId: PortId,
+  ): boolean {
+    const currentNetId = this.state.currentRouteNetId
+    if (currentNetId === undefined) return false
+
+    for (const lanePortId of this.boundaryLaneGroupByPortId[freePortId] ?? []) {
+      if (
+        lanePortId === currentCandidate.portId ||
+        this.state.portAssignment[lanePortId] !== currentNetId ||
+        this.problem.portSectionMask[lanePortId] === 0 ||
+        this.isPortReservedForDifferentNet(lanePortId)
+      ) {
+        continue
+      }
+      const incidentRegions = this.topology.incidentPortRegion[lanePortId]
+      if (!incidentRegions.includes(currentCandidate.nextRegionId)) continue
+      const nextRegionId =
+        incidentRegions[0] === currentCandidate.nextRegionId
+          ? incidentRegions[1]
+          : incidentRegions[0]
+      if (
+        nextRegionId === undefined ||
+        this.isRegionReservedForDifferentNet(nextRegionId)
+      ) {
+        continue
+      }
+      if (Number.isFinite(this.computeG(currentCandidate, lanePortId))) {
+        return true
+      }
+    }
+    return false
   }
 
   get problemSetup(): TinyHyperGraphProblemSetup {
@@ -626,6 +688,12 @@ export class TinyHyperGraphSolver extends BaseSolver {
       }
       if (neighborPortId === currentCandidate.portId) continue
       if (problem.portSectionMask[neighborPortId] === 0) continue
+      if (
+        assignedNetId === -1 &&
+        this.hasLegalSameNetLaneForHop(currentCandidate, neighborPortId)
+      ) {
+        continue
+      }
 
       const g = this.computeG(currentCandidate, neighborPortId)
       if (!Number.isFinite(g)) continue
