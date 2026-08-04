@@ -248,6 +248,16 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     }
   }
 
+  protected override createGreedyFinalRouteSolver(
+    options: TinyHyperGraphSolverOptions,
+  ): SelectiveReripTinyHyperGraphSolver {
+    return new SelectiveReripTinyHyperGraphSolver(
+      this.topology,
+      this.problem,
+      options,
+    )
+  }
+
   override _step(): void {
     const routeId =
       this.state.currentRouteId ?? this.state.unroutedRoutes[0]
