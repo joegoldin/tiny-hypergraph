@@ -34,6 +34,19 @@ export type SelectiveReripBlockerResource =
   | PortBlockerResource
   | SameLayerIntersectionBlockerResource
 
+export type SelectiveReripBlockerResourceDiagnostic =
+  SelectiveReripBlockerResource & {
+    ownerNetIds: number[]
+    serializedPortId?: string
+    serializedRegionId?: string
+    fromSerializedPortId?: string
+    toSerializedPortId?: string
+    portMetadata?: unknown
+    regionMetadata?: unknown
+    fromPortMetadata?: unknown
+    toPortMetadata?: unknown
+  }
+
 type RelaxedSearchHopData = {
   resources: SelectiveReripBlockerResource[]
 }
@@ -63,6 +76,7 @@ export type SelectiveReripTinyHyperGraphStats = {
   maxFailedOwnerPairCount: number
   failedOwnerPairs: FailedOwnerPairCount[]
   lastFailedRouteId?: RouteId
+  lastDirectBlockerResources: SelectiveReripBlockerResourceDiagnostic[]
   lastDirectOwnerRouteIds: RouteId[]
   lastRepeatedOwnerRouteIds: RouteId[]
   lastAlternateOwnerRouteIds: RouteId[]
@@ -83,6 +97,7 @@ const createInitialSelectiveReripStats =
     failedOwnerPairCount: 0,
     maxFailedOwnerPairCount: 0,
     failedOwnerPairs: [],
+    lastDirectBlockerResources: [],
     lastDirectOwnerRouteIds: [],
     lastRepeatedOwnerRouteIds: [],
     lastAlternateOwnerRouteIds: [],
@@ -216,6 +231,10 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
           ...pair,
         }),
       ),
+      lastDirectBlockerResources:
+        this.selectiveReripStats.lastDirectBlockerResources.map(
+          (resource) => ({ ...resource, owners: [...resource.owners] }),
+        ),
       lastDirectOwnerRouteIds: [
         ...this.selectiveReripStats.lastDirectOwnerRouteIds,
       ],
@@ -268,6 +287,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
         ? directPath.reason
         : "no_blocker_path"
       this.selectiveReripStats.lastFailedRouteId = failedRouteId
+      this.selectiveReripStats.lastDirectBlockerResources = []
       this.selectiveReripStats.lastDirectOwnerRouteIds = []
       this.selectiveReripStats.lastRepeatedOwnerRouteIds = []
       this.selectiveReripStats.lastAlternateOwnerRouteIds = []
@@ -281,6 +301,9 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     }
 
     const directOwnerRouteIds = [...directPath.owners]
+    this.selectiveReripStats.lastDirectBlockerResources = directPath.hops
+      .flatMap((hop) => hop.data?.resources ?? [])
+      .map((resource) => this.describeBlockerResource(resource))
     const repeatedOwnerRouteIds: RouteId[] = []
     for (const ownerRouteId of directOwnerRouteIds) {
       const count = this.incrementFailedOwnerPair(failedRouteId, ownerRouteId)
@@ -706,6 +729,40 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       ...failedOwnerPairs.map(({ count }) => count),
     )
     this.stats = { ...this.stats, ...this.getSelectiveReripStats() }
+  }
+
+  private describeBlockerResource(
+    resource: SelectiveReripBlockerResource,
+  ): SelectiveReripBlockerResourceDiagnostic {
+    const ownerNetIds = [
+      ...new Set(
+        resource.owners.map((routeId) => this.problem.routeNet[routeId]!),
+      ),
+    ]
+
+    if (resource.kind === "port") {
+      return {
+        ...resource,
+        ownerNetIds,
+        serializedPortId:
+          this.topology.portMetadata?.[resource.portId]?.serializedPortId,
+        portMetadata: this.topology.portMetadata?.[resource.portId],
+      }
+    }
+
+    return {
+      ...resource,
+      ownerNetIds,
+      serializedRegionId:
+        this.topology.regionMetadata?.[resource.regionId]?.serializedRegionId,
+      fromSerializedPortId:
+        this.topology.portMetadata?.[resource.fromPortId]?.serializedPortId,
+      toSerializedPortId:
+        this.topology.portMetadata?.[resource.toPortId]?.serializedPortId,
+      regionMetadata: this.topology.regionMetadata?.[resource.regionId],
+      fromPortMetadata: this.topology.portMetadata?.[resource.fromPortId],
+      toPortMetadata: this.topology.portMetadata?.[resource.toPortId],
+    }
   }
 
   private describeRoute(routeId: RouteId): string {
