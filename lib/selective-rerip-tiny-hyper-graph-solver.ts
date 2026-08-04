@@ -1,5 +1,6 @@
 import {
   createEmptyRegionIntersectionCache,
+  type Candidate,
   type TinyHyperGraphProblem,
   type TinyHyperGraphSolverOptions,
   type TinyHyperGraphTopology,
@@ -68,6 +69,7 @@ export type RouteSearchIterationCount = {
 export type SelectiveReripTinyHyperGraphStats = {
   selectiveRipCount: number
   selectivelyRippedRouteCount: number
+  committedRelaxedPathCount: number
   globalReripCount: number
   globalReripReason?: "no_path" | "expansion_limit" | "no_blocker_path"
   alternateBlockerSearchCount: number
@@ -91,6 +93,7 @@ const createInitialSelectiveReripStats =
   (): SelectiveReripTinyHyperGraphStats => ({
     selectiveRipCount: 0,
     selectivelyRippedRouteCount: 0,
+    committedRelaxedPathCount: 0,
     globalReripCount: 0,
     alternateBlockerSearchCount: 0,
     alternateOwnerCount: 0,
@@ -349,6 +352,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       directOwnerRouteIds,
       alternateOwnerRouteIds,
     })
+    const selectedPath = alternatePath?.found ? alternatePath : directPath
     const alternateOnlyOwnerRouteIds = (alternateOwnerRouteIds ?? []).filter(
       (ownerRouteId) => !directPath.owners.has(ownerRouteId),
     )
@@ -360,20 +364,22 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       this.selectiveReripCongestionUpdateCount += 1
     }
     this.rebuildCommittedState(rippedRouteIds)
+    this.commitRelaxedPath(failedRouteId, selectedPath.states)
     this.state.ripCount += 1
-    this.state.currentRouteId = undefined
-    this.state.currentRouteNetId = undefined
-    this.state.unroutedRoutes = orderRoutesAfterSelectiveRerip({
-      failedRouteId,
-      pendingRouteIds: this.state.unroutedRoutes,
-      rippedRouteIds,
-    })
+    this.state.unroutedRoutes = [
+      ...this.state.unroutedRoutes.filter(
+        (routeId) =>
+          routeId !== failedRouteId && !rippedRouteIds.has(routeId),
+      ),
+      ...[...rippedRouteIds].filter((routeId) => routeId !== failedRouteId),
+    ]
     this.state.candidateQueue.clear()
     this.resetCandidateBestCosts()
     this.state.goalPortId = -1
 
     this.selectiveReripStats.selectiveRipCount += 1
     this.selectiveReripStats.selectivelyRippedRouteCount += rippedRouteIds.size
+    this.selectiveReripStats.committedRelaxedPathCount += 1
     this.selectiveReripStats.alternateOwnerCount +=
       alternateOnlyOwnerRouteIds.length
     this.selectiveReripStats.lastFailedRouteId = failedRouteId
@@ -387,6 +393,52 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     this.selectiveReripStats.lastAlternateSearchExpandedLabelCount =
       alternatePath?.expandedLabelCount ?? 0
     this.publishSelectiveReripStats()
+  }
+
+  private commitRelaxedPath(
+    routeId: RouteId,
+    states: readonly RelaxedSearchState[],
+  ): void {
+    const routeNetId = this.problem.routeNet[routeId]!
+    const portOwners = this.getPortOwners()
+    this.state.currentRouteId = routeId
+    this.state.currentRouteNetId = routeNetId
+    this.state.goalPortId = this.problem.routeEndPort[routeId]!
+
+    for (let index = 1; index < states.length; index++) {
+      const fromState = states[index - 1]!
+      const toState = states[index]!
+      const blockers = this.getHopBlockerResources({
+        regionId: fromState.nextRegionId,
+        fromPortId: fromState.portId,
+        toPortId: toState.portId,
+        routeNetId,
+        portOwners,
+      })
+      if (blockers.length > 0) {
+        throw new Error(
+          `SelectiveReripTinyHyperGraphSolver: relaxed path for route ${routeId} remained blocked after rerip`,
+        )
+      }
+    }
+
+    let previousCandidate: Candidate | undefined
+    for (const state of states) {
+      previousCandidate = {
+        portId: state.portId,
+        nextRegionId: state.nextRegionId,
+        prevCandidate: previousCandidate,
+        f: 0,
+        g: 0,
+        h: 0,
+      }
+    }
+    if (!previousCandidate) {
+      throw new Error(
+        `SelectiveReripTinyHyperGraphSolver: relaxed path for route ${routeId} had no states`,
+      )
+    }
+    this.onPathFound(previousCandidate)
   }
 
   private addCongestionCostForSelectiveRerip(): void {
