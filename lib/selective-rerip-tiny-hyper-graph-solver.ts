@@ -176,20 +176,35 @@ export function orderConflictComponentRoutes(params: {
   failedOwnerPairs: readonly FailedOwnerPairCount[]
 }): ConflictComponentRouteOrder {
   const ownersByFailedRouteId = new Map<RouteId, RouteId[]>()
+  const conflictNeighborsByRouteId = new Map<RouteId, RouteId[]>()
   for (const { failedRouteId, ownerRouteId } of params.failedOwnerPairs) {
     const owners = ownersByFailedRouteId.get(failedRouteId) ?? []
     if (!owners.includes(ownerRouteId)) owners.push(ownerRouteId)
     ownersByFailedRouteId.set(failedRouteId, owners)
+
+    // Conflict membership is undirected: a pending route may be the owner that
+    // was displaced after the failed route took its place. Ordering below
+    // remains directed so the failed route is still attempted before its owner.
+    for (const [routeId, neighborRouteId] of [
+      [failedRouteId, ownerRouteId],
+      [ownerRouteId, failedRouteId],
+    ] as const) {
+      const neighbors = conflictNeighborsByRouteId.get(routeId) ?? []
+      if (!neighbors.includes(neighborRouteId)) {
+        neighbors.push(neighborRouteId)
+      }
+      conflictNeighborsByRouteId.set(routeId, neighbors)
+    }
   }
 
   const componentRouteIds = [...new Set(params.pendingRouteIds)]
   const componentRouteIdSet = new Set(componentRouteIds)
   for (let index = 0; index < componentRouteIds.length; index++) {
-    for (const ownerRouteId of
-      ownersByFailedRouteId.get(componentRouteIds[index]!) ?? []) {
-      if (componentRouteIdSet.has(ownerRouteId)) continue
-      componentRouteIdSet.add(ownerRouteId)
-      componentRouteIds.push(ownerRouteId)
+    for (const conflictRouteId of
+      conflictNeighborsByRouteId.get(componentRouteIds[index]!) ?? []) {
+      if (componentRouteIdSet.has(conflictRouteId)) continue
+      componentRouteIdSet.add(conflictRouteId)
+      componentRouteIds.push(conflictRouteId)
     }
   }
 
