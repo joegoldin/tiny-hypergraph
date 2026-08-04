@@ -5,6 +5,7 @@ import {
   computeRegionCost,
   DEFAULT_MIN_VIA_PAD_DIAMETER,
   isKnownSingleLayerMask,
+  TRACE_VIA_MARGIN,
 } from "./computeRegionCost"
 import { countNewIntersectionsWithValues } from "./countNewIntersections"
 import {
@@ -764,6 +765,14 @@ export class TinyHyperGraphSolver extends BaseSolver {
     return isKnownSingleLayerMask(regionAvailableZMask)
   }
 
+  canRegionFitVia(regionId: RegionId): boolean {
+    const minimumViaFootprint = this.minViaPadDiameter + TRACE_VIA_MARGIN
+    return (
+      this.topology.regionWidth[regionId] >= minimumViaFootprint &&
+      this.topology.regionHeight[regionId] >= minimumViaFootprint
+    )
+  }
+
   protected computeRegionCostForRegion(
     regionId: RegionId,
     numSameLayerIntersections: number,
@@ -1451,6 +1460,10 @@ export class TinyHyperGraphSolver extends BaseSolver {
     const neighborPortZ = topology.portZ[neighborPortId]
     const layerMask = (1 << currentPortZ) | (1 << neighborPortZ)
     const entryExitLayerChanges = currentPortZ !== neighborPortZ ? 1 : 0
+
+    if (entryExitLayerChanges > 0 && !this.canRegionFitVia(nextRegionId)) {
+      return Number.POSITIVE_INFINITY
+    }
 
     const [
       newSameLayerIntersections,
