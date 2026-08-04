@@ -189,7 +189,7 @@ export interface RegionCostSummary {
   totalRegionCost: number
 }
 
-interface SolvedStateSnapshot {
+export interface SolvedStateSnapshot {
   portAssignment: Int32Array
   regionSegments: Array<[RouteId, PortId, PortId][]>
   regionIntersectionCaches: RegionIntersectionCache[]
@@ -1106,6 +1106,26 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
 
     return left.totalRegionCost - right.totalRegionCost
+  }
+
+  protected captureSolvedStateSnapshot(): SolvedStateSnapshot {
+    return cloneSolvedStateSnapshot({
+      portAssignment: this.state.portAssignment,
+      regionSegments: this.state.regionSegments,
+      regionIntersectionCaches: this.state.regionIntersectionCaches,
+      regionCongestionCost: this.state.regionCongestionCost,
+      ripCount: this.state.ripCount,
+    })
+  }
+
+  protected restoreSolvedStateSnapshot(snapshot: SolvedStateSnapshot): void {
+    const clonedSnapshot = cloneSolvedStateSnapshot(snapshot)
+    this.state.portAssignment = clonedSnapshot.portAssignment
+    this.state.regionSegments = clonedSnapshot.regionSegments
+    this.state.regionIntersectionCaches =
+      clonedSnapshot.regionIntersectionCaches
+    this.state.regionCongestionCost = clonedSnapshot.regionCongestionCost
+    this.state.ripCount = clonedSnapshot.ripCount
   }
 
   protected captureBestSolvedState(summary: RegionCostSummary) {

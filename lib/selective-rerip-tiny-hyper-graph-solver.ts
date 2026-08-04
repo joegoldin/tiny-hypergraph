@@ -1,5 +1,7 @@
 import {
+  type Candidate,
   createEmptyRegionIntersectionCache,
+  type SolvedStateSnapshot,
   type TinyHyperGraphProblem,
   type TinyHyperGraphSolverOptions,
   type TinyHyperGraphTopology,
@@ -9,7 +11,7 @@ import {
   findDistinctOwnerBlockerPath,
   type DistinctOwnerBlockerSearchResult,
 } from "./find-distinct-owner-blocker-path"
-import type { PortId, RegionId, RouteId } from "./types"
+import type { HopId, NetId, PortId, RegionId, RouteId } from "./types"
 
 type RelaxedSearchState = {
   portId: PortId
@@ -50,6 +52,32 @@ export type SelectiveReripBlockerResourceDiagnostic =
 type RelaxedSearchHopData = {
   resources: SelectiveReripBlockerResource[]
 }
+
+type ConflictComponentBacktrackFrame = {
+  solvedState: SolvedStateSnapshot
+  routeId: RouteId
+  routeNetId: NetId
+  unroutedRouteIds: RouteId[]
+  goalPortId: PortId
+  candidates: Candidate[]
+  candidateBestCostByHopId: Float64Array | Map<HopId, number>
+  candidateBestCostGenerationByHopId: Uint32Array | Map<HopId, number>
+  candidateBestCostGeneration: number
+}
+
+const MAX_CONFLICT_COMPONENT_BACKTRACKS = 64
+
+const cloneCandidateBestCosts = (
+  costs: Float64Array | Map<HopId, number>,
+): Float64Array | Map<HopId, number> =>
+  costs instanceof Map ? new Map(costs) : new Float64Array(costs)
+
+const cloneCandidateBestCostGenerations = (
+  generations: Uint32Array | Map<HopId, number>,
+): Uint32Array | Map<HopId, number> =>
+  generations instanceof Map
+    ? new Map(generations)
+    : new Uint32Array(generations)
 
 const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
 
@@ -357,6 +385,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
         finalSolver.state.unroutedRoutes.length +
         (finalSolver.state.currentRouteId === undefined ? 0 : 1),
       conflictComponentFinalRouteIterations: finalSolver.iterations,
+      conflictComponentFinalRouteBacktrackCount: finalSolver.backtrackCount,
     }
   }
 
@@ -888,6 +917,9 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 class ConflictComponentFinalRouteSolver extends SelectiveReripTinyHyperGraphSolver {
   conflictComponentRouteCount = 0
   conflictComponentCycleRouteCount = 0
+  backtrackCount = 0
+
+  private backtrackFrames: ConflictComponentBacktrackFrame[] = []
 
   constructor(
     topology: TinyHyperGraphTopology,
@@ -931,8 +963,69 @@ class ConflictComponentFinalRouteSolver extends SelectiveReripTinyHyperGraphSolv
     ).size
   }
 
+  override onPathFound(finalCandidate: Candidate): void {
+    const routeId = this.state.currentRouteId
+    const routeNetId = this.state.currentRouteNetId
+    if (routeId === undefined || routeNetId === undefined) {
+      super.onPathFound(finalCandidate)
+      return
+    }
+
+    const candidates = this.state.candidateQueue.toArray()
+    if (candidates.length > 0) {
+      this.backtrackFrames.push({
+        solvedState: this.captureSolvedStateSnapshot(),
+        routeId,
+        routeNetId,
+        unroutedRouteIds: [...this.state.unroutedRoutes],
+        goalPortId: this.state.goalPortId,
+        candidates,
+        candidateBestCostByHopId: cloneCandidateBestCosts(
+          this.state.candidateBestCostByHopId,
+        ),
+        candidateBestCostGenerationByHopId:
+          cloneCandidateBestCostGenerations(
+            this.state.candidateBestCostGenerationByHopId,
+          ),
+        candidateBestCostGeneration:
+          this.state.candidateBestCostGeneration,
+      })
+    }
+
+    super.onPathFound(finalCandidate)
+  }
+
   override onOutOfCandidates(): void {
+    while (
+      this.backtrackFrames.length > 0 &&
+      this.backtrackCount < MAX_CONFLICT_COMPONENT_BACKTRACKS
+    ) {
+      const frame = this.backtrackFrames.pop()!
+      if (frame.candidates.length === 0) continue
+
+      this.restoreSolvedStateSnapshot(frame.solvedState)
+      this.state.currentRouteId = frame.routeId
+      this.state.currentRouteNetId = frame.routeNetId
+      this.state.unroutedRoutes = [...frame.unroutedRouteIds]
+      this.state.goalPortId = frame.goalPortId
+      this.state.candidateBestCostByHopId = cloneCandidateBestCosts(
+        frame.candidateBestCostByHopId,
+      )
+      this.state.candidateBestCostGenerationByHopId =
+        cloneCandidateBestCostGenerations(
+          frame.candidateBestCostGenerationByHopId,
+        )
+      this.state.candidateBestCostGeneration =
+        frame.candidateBestCostGeneration
+      this.state.candidateQueue.clear()
+      for (const candidate of frame.candidates) {
+        this.state.candidateQueue.queue(candidate)
+      }
+      this.backtrackCount += 1
+      return
+    }
+
     this.failed = true
-    this.error = "ConflictComponentFinalRouteSolver ran out of candidates"
+    this.error = `ConflictComponentFinalRouteSolver ran out of candidates after ${this.backtrackCount} backtrack(s)`
   }
 }
