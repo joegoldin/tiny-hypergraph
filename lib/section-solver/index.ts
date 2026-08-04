@@ -551,6 +551,10 @@ const createSectionRoutePlans = (
       routeEndPort,
       routeNet: new Int32Array(problem.routeNet),
       regionNetId: new Int32Array(problem.regionNetId),
+      regionReservedZMask:
+        problem.regionReservedZMask === undefined
+          ? undefined
+          : new Int32Array(problem.regionReservedZMask),
       portPenalty:
         problem.portPenalty === undefined
           ? undefined

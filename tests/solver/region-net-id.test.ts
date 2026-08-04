@@ -62,6 +62,41 @@ test("solver does not traverse regions reserved for a different net", () => {
   expect(solver.stats.staticallyUnroutableRouteCount).toBe(1)
 })
 
+test("solver can use a free layer in a partially reserved region", () => {
+  const topology: TinyHyperGraphTopology = {
+    portCount: 4,
+    regionCount: 5,
+    regionIncidentPorts: [[0, 1], [1, 2], [2, 3], [0], [3]],
+    incidentPortRegion: [[0, 3], [0, 1], [1, 2], [2, 4]],
+    regionWidth: new Float64Array(5).fill(1),
+    regionHeight: new Float64Array(5).fill(1),
+    regionCenterX: new Float64Array(5).fill(0),
+    regionCenterY: new Float64Array(5).fill(0),
+    regionAvailableZMask: Int32Array.from([2, 3, 2, 2, 2]),
+    portAngleForRegion1: new Int32Array(4),
+    portAngleForRegion2: new Int32Array(4),
+    portX: new Float64Array([0, 1, 2, 3]),
+    portY: new Float64Array(4),
+    portZ: new Int32Array(4).fill(1),
+  }
+
+  const problem: TinyHyperGraphProblem = {
+    routeCount: 1,
+    portSectionMask: new Int8Array(4).fill(1),
+    routeStartPort: new Int32Array([0]),
+    routeEndPort: new Int32Array([3]),
+    routeNet: new Int32Array([0]),
+    regionNetId: Int32Array.from([-1, 1, -1, -1, -1]),
+    regionReservedZMask: Int32Array.from([0, 1, 0, 0, 0]),
+  }
+
+  const solver = new TinyHyperGraphSolver(topology, problem)
+  solver.solve()
+
+  expect(solver.solved).toBe(true)
+  expect(solver.failed).toBe(false)
+})
+
 test("visualize only shows statically unroutable route hints after static reachability failure", () => {
   const topology: TinyHyperGraphTopology = {
     portCount: 6,

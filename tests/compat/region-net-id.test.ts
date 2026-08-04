@@ -34,6 +34,24 @@ test("loadSerializedHyperGraph maps serialized region net ids into problem reser
   expect(Array.from(problem.regionNetId)).toEqual([7, 3, -1, -1])
 })
 
+test("loadSerializedHyperGraph keeps layer-specific region reservations", () => {
+  const graph: SerializedHyperGraph = {
+    regions: [
+      createRegion("partial", [], {
+        netId: 7,
+        availableZ: [0, 1],
+        reservedZ: [0],
+      }),
+    ],
+    ports: [],
+    connections: [],
+  }
+
+  const { problem } = loadSerializedHyperGraph(graph)
+
+  expect(Array.from(problem.regionReservedZMask ?? [])).toEqual([1])
+})
+
 test("serialized region net ids take precedence over endpoint net inference", () => {
   const graph: SerializedHyperGraph = {
     regions: [

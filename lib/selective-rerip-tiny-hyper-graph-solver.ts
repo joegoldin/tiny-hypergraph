@@ -374,7 +374,14 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     data: RelaxedSearchHopData
   }> {
     const { state, goalPortId, routeNetId } = params
-    if (this.isRegionReservedForDifferentNet(state.nextRegionId)) return []
+    if (
+      this.isRegionReservedForDifferentNet(
+        state.nextRegionId,
+        1 << this.topology.portZ[state.portId],
+      )
+    ) {
+      return []
+    }
 
     const hops: Array<{
       state: RelaxedSearchState
@@ -387,6 +394,17 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     ] ?? []) {
       if (neighborPortId === state.portId) continue
       if (this.isPortReservedForDifferentNet(neighborPortId)) continue
+      const hopLayerMask =
+        (1 << this.topology.portZ[state.portId]) |
+        (1 << this.topology.portZ[neighborPortId])
+      if (
+        this.isRegionReservedForDifferentNet(
+          state.nextRegionId,
+          hopLayerMask,
+        )
+      ) {
+        continue
+      }
       if (
         neighborPortId !== goalPortId &&
         this.problem.portSectionMask[neighborPortId] === 0
@@ -420,7 +438,10 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
           firstRegionId === state.nextRegionId ? secondRegionId : firstRegionId
         if (
           nextRegionId === undefined ||
-          this.isRegionReservedForDifferentNet(nextRegionId)
+          this.isRegionReservedForDifferentNet(
+            nextRegionId,
+            1 << this.topology.portZ[neighborPortId],
+          )
         ) {
           continue
         }

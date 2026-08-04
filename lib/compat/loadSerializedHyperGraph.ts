@@ -198,6 +198,20 @@ const getRegionAvailableZMask = (
   return mask
 }
 
+const getSerializedRegionReservedZMask = (
+  region: SerializedHyperGraph["regions"][number],
+): number | undefined => {
+  const reservedZ = (region.d as { reservedZ?: unknown } | undefined)
+    ?.reservedZ
+  if (!Array.isArray(reservedZ)) return undefined
+
+  let mask = 0
+  for (const z of reservedZ) {
+    if (Number.isInteger(z) && z >= 0 && z < 31) mask |= 1 << z
+  }
+  return mask
+}
+
 const getSerializedPortZ = (
   port: SerializedHyperGraph["ports"][number],
 ): number => {
@@ -376,6 +390,7 @@ export const loadSerializedHyperGraph = (
   const regionCenterY = new Float64Array(regionCount)
   const regionAvailableZMask = new Int32Array(regionCount)
   const regionNetId = new Int32Array(regionCount).fill(-1)
+  const regionReservedZMask = new Int32Array(regionCount)
   const hasSerializedRegionNetId = new Int8Array(regionCount)
 
   filteredHyperGraph.regions.forEach((region, regionIndex) => {
@@ -389,6 +404,9 @@ export const loadSerializedHyperGraph = (
     const serializedRegionNetId = getSerializedRegionNetId(region)
     if (serializedRegionNetId !== undefined) {
       regionNetId[regionIndex] = serializedRegionNetId
+      regionReservedZMask[regionIndex] =
+        getSerializedRegionReservedZMask(region) ??
+        regionAvailableZMask[regionIndex]!
       hasSerializedRegionNetId[regionIndex] = 1
     }
   })
@@ -487,6 +505,7 @@ export const loadSerializedHyperGraph = (
 
     if (candidateNetIndexes.size === 1) {
       regionNetId[regionIndex] = [...candidateNetIndexes][0]!
+      regionReservedZMask[regionIndex] = regionAvailableZMask[regionIndex]!
     }
   })
 
@@ -620,6 +639,7 @@ export const loadSerializedHyperGraph = (
     routeEndPort,
     routeNet,
     regionNetId,
+    regionReservedZMask,
     ...(initialAssignments.length > 0 && { initialAssignments }),
   }
 

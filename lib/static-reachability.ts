@@ -95,12 +95,20 @@ const isPortEndpointReservedForStaticReachability = (
 }
 
 const isRegionBlockedForStaticReachability = (
+  topology: TinyHyperGraphTopology,
   problem: TinyHyperGraphProblem,
   routeNetId: NetId,
   regionId: RegionId,
+  layerMask: number,
 ) => {
   const reservedNetId = problem.regionNetId[regionId]
-  return reservedNetId !== -1 && reservedNetId !== routeNetId
+  if (reservedNetId === -1 || reservedNetId === routeNetId) return false
+
+  const reservedZMask =
+    problem.regionReservedZMask?.[regionId] ??
+    topology.regionAvailableZMask?.[regionId] ??
+    -1
+  return (reservedZMask & layerMask) !== 0
 }
 
 const hasStaticReachabilityPath = (
@@ -137,9 +145,11 @@ const hasStaticReachabilityPath = (
 
     if (
       isRegionBlockedForStaticReachability(
+        topology,
         problem,
         routeNetId,
         currentCandidate.nextRegionId,
+        1 << topology.portZ[currentCandidate.portId],
       )
     ) {
       continue
@@ -149,6 +159,21 @@ const hasStaticReachabilityPath = (
       currentCandidate.nextRegionId
     ] ?? []) {
       const assignedNetId = portAssignment[neighborPortId]
+      const hopLayerMask =
+        (1 << topology.portZ[currentCandidate.portId]) |
+        (1 << topology.portZ[neighborPortId])
+
+      if (
+        isRegionBlockedForStaticReachability(
+          topology,
+          problem,
+          routeNetId,
+          currentCandidate.nextRegionId,
+          hopLayerMask,
+        )
+      ) {
+        continue
+      }
 
       if (
         isPortEndpointReservedForStaticReachability(
@@ -183,7 +208,13 @@ const hasStaticReachabilityPath = (
 
       if (
         nextRegionId === undefined ||
-        isRegionBlockedForStaticReachability(problem, routeNetId, nextRegionId)
+        isRegionBlockedForStaticReachability(
+          topology,
+          problem,
+          routeNetId,
+          nextRegionId,
+          1 << topology.portZ[neighborPortId],
+        )
       ) {
         continue
       }

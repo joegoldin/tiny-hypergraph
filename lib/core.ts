@@ -152,6 +152,12 @@ export interface TinyHyperGraphProblem {
   /** regionNetId[regionId] = reserved net id for the region, -1 means freely traversable */
   regionNetId: Int32Array
 
+  /**
+   * regionReservedZMask[regionId] = layers owned by regionNetId.
+   * When omitted, every available layer in a reserved region is owned.
+   */
+  regionReservedZMask?: Int32Array
+
   /** portPenalty[portId] = extra cost paid when a route traverses the port */
   portPenalty?: Float64Array
 
@@ -594,7 +600,12 @@ export class TinyHyperGraphSolver extends BaseSolver {
       return
     }
 
-    if (this.isRegionReservedForDifferentNet(currentCandidate.nextRegionId)) {
+    if (
+      this.isRegionReservedForDifferentNet(
+        currentCandidate.nextRegionId,
+        1 << topology.portZ[currentCandidate.portId],
+      )
+    ) {
       return
     }
 
@@ -639,7 +650,10 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
       if (
         nextRegionId === undefined ||
-        this.isRegionReservedForDifferentNet(nextRegionId)
+        this.isRegionReservedForDifferentNet(
+          nextRegionId,
+          1 << topology.portZ[neighborPortId],
+        )
       ) {
         continue
       }
@@ -731,12 +745,20 @@ export class TinyHyperGraphSolver extends BaseSolver {
       this.topology.incidentPortRegion[startingPortId] ?? []
     const currentRouteNetId = this.problem.routeNet[routeId]
 
+    const startingLayerMask = 1 << this.topology.portZ[startingPortId]
     return (
       startingIncidentRegions.find(
-        (regionId) => this.problem.regionNetId[regionId] === -1,
+        (regionId) =>
+          this.problem.regionNetId[regionId] === -1 ||
+          (this.getRegionReservedZMask(regionId) & startingLayerMask) === 0,
       ) ??
       startingIncidentRegions.find(
-        (regionId) => this.problem.regionNetId[regionId] === currentRouteNetId,
+        (regionId) =>
+          !this.isRegionReservedForNet(
+            regionId,
+            currentRouteNetId,
+            startingLayerMask,
+          ),
       ) ??
       startingIncidentRegions[0]
     )
@@ -751,10 +773,33 @@ export class TinyHyperGraphSolver extends BaseSolver {
     )
   }
 
-  isRegionReservedForDifferentNet(regionId: RegionId): boolean {
+  isRegionReservedForDifferentNet(
+    regionId: RegionId,
+    layerMask?: number,
+  ): boolean {
+    const currentRouteNetId = this.state.currentRouteNetId
+    return currentRouteNetId === undefined
+      ? false
+      : this.isRegionReservedForNet(regionId, currentRouteNetId, layerMask)
+  }
+
+  isRegionReservedForNet(
+    regionId: RegionId,
+    routeNetId: NetId,
+    layerMask?: number,
+  ): boolean {
     const reservedNetId = this.problem.regionNetId[regionId]
+    if (reservedNetId === -1 || reservedNetId === routeNetId) return false
+
+    const reservedZMask = this.getRegionReservedZMask(regionId)
+    return layerMask === undefined || (reservedZMask & layerMask) !== 0
+  }
+
+  getRegionReservedZMask(regionId: RegionId): number {
     return (
-      reservedNetId !== -1 && reservedNetId !== this.state.currentRouteNetId
+      this.problem.regionReservedZMask?.[regionId] ??
+      this.topology.regionAvailableZMask?.[regionId] ??
+      -1
     )
   }
 
@@ -1451,6 +1496,10 @@ export class TinyHyperGraphSolver extends BaseSolver {
     const neighborPortZ = topology.portZ[neighborPortId]
     const layerMask = (1 << currentPortZ) | (1 << neighborPortZ)
     const entryExitLayerChanges = currentPortZ !== neighborPortZ ? 1 : 0
+
+    if (this.isRegionReservedForDifferentNet(nextRegionId, layerMask)) {
+      return Number.POSITIVE_INFINITY
+    }
 
     const [
       newSameLayerIntersections,

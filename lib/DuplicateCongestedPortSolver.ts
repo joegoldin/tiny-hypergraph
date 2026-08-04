@@ -400,6 +400,10 @@ const createSingleRouteProblem = (
   routeEndPort: Int32Array.from([problem.routeEndPort[routeId]]),
   routeNet: Int32Array.from([problem.routeNet[routeId]]),
   regionNetId: new Int32Array(problem.regionNetId),
+  regionReservedZMask:
+    problem.regionReservedZMask === undefined
+      ? undefined
+      : new Int32Array(problem.regionReservedZMask),
   portPenalty:
     problem.portPenalty === undefined
       ? undefined
