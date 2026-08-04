@@ -663,11 +663,10 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
         boundaryPortIds.push(portId)
       }
 
-      if (
-        !boundaryPortIds.some(
-          (portId) => this.state.portAssignment[portId] === -1,
-        )
-      ) {
+      const freePortCount = boundaryPortIds.filter(
+        (portId) => this.state.portAssignment[portId] === -1,
+      ).length
+      if (freePortCount < 2) {
         continue
       }
 
@@ -684,17 +683,26 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
           left - right,
       )
 
+      const boundaryOwnerRouteIds: RouteId[] = []
+      const boundaryOwnerRouteIdSet = new Set<RouteId>()
       for (const portId of boundaryPortIds) {
         for (const ownerRouteId of ownersByPort.get(portId) ?? []) {
           if (
             this.problem.routeNet[ownerRouteId] === routeNetId ||
-            orderedOwnerRouteIdSet.has(ownerRouteId)
+            boundaryOwnerRouteIdSet.has(ownerRouteId)
           ) {
             continue
           }
-          orderedOwnerRouteIdSet.add(ownerRouteId)
-          orderedOwnerRouteIds.push(ownerRouteId)
+          boundaryOwnerRouteIdSet.add(ownerRouteId)
+          boundaryOwnerRouteIds.push(ownerRouteId)
         }
+      }
+
+      if (boundaryOwnerRouteIds.length < 3) continue
+      for (const ownerRouteId of boundaryOwnerRouteIds) {
+        if (orderedOwnerRouteIdSet.has(ownerRouteId)) continue
+        orderedOwnerRouteIdSet.add(ownerRouteId)
+        orderedOwnerRouteIds.push(ownerRouteId)
       }
     }
 
