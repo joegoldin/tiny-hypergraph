@@ -1,4 +1,5 @@
 import {
+  type Candidate,
   createEmptyRegionIntersectionCache,
   type TinyHyperGraphProblem,
   type TinyHyperGraphSolverOptions,
@@ -8,6 +9,7 @@ import { DistanceAwareTinyHyperGraphSolver } from "./distance-aware-tiny-hypergr
 import {
   findDistinctOwnerBlockerPath,
   type DistinctOwnerBlockerSearchResult,
+  type DistinctOwnerBlockerSearchSuccess,
 } from "./find-distinct-owner-blocker-path"
 import type { PortId, RegionId, RouteId } from "./types"
 
@@ -39,6 +41,7 @@ type RelaxedSearchHopData = {
 }
 
 const MAX_SELECTIVE_RERIP_CONGESTION_UPDATES = 1
+const SELECTIVE_RERIP_RESOURCE_HISTORY_INCREMENT = 1
 
 export type FailedOwnerPairCount = {
   failedRouteId: RouteId
@@ -173,6 +176,16 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
   private currentRouteSearchIterationCount = 0
 
   private countedRouteId: RouteId | undefined
+
+  private readonly learnedPortPenaltyByRouteId = new Map<
+    RouteId,
+    Map<PortId, number>
+  >()
+
+  private readonly learnedRegionPenaltyByRouteId = new Map<
+    RouteId,
+    Map<RegionId, number>
+  >()
 
   constructor(
     topology: TinyHyperGraphTopology,
@@ -326,6 +339,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       directOwnerRouteIds,
       alternateOwnerRouteIds,
     })
+    const selectedPath = alternatePath?.found ? alternatePath : directPath
+    this.learnRippedRouteBlockers(selectedPath, rippedRouteIds)
     const alternateOnlyOwnerRouteIds = (alternateOwnerRouteIds ?? []).filter(
       (ownerRouteId) => !directPath.owners.has(ownerRouteId),
     )
@@ -364,6 +379,71 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     this.selectiveReripStats.lastAlternateSearchExpandedLabelCount =
       alternatePath?.expandedLabelCount ?? 0
     this.publishSelectiveReripStats()
+  }
+
+  override computeG(
+    currentCandidate: Candidate,
+    neighborPortId: PortId,
+  ): number {
+    const baseCost = super.computeG(currentCandidate, neighborPortId)
+    if (!Number.isFinite(baseCost)) return baseCost
+
+    const routeId = this.state.currentRouteId
+    if (routeId === undefined) return baseCost
+
+    return (
+      baseCost +
+      (this.learnedPortPenaltyByRouteId.get(routeId)?.get(neighborPortId) ??
+        0) +
+      (this.learnedRegionPenaltyByRouteId
+        .get(routeId)
+        ?.get(currentCandidate.nextRegionId) ?? 0)
+    )
+  }
+
+  private learnRippedRouteBlockers(
+    path: DistinctOwnerBlockerSearchSuccess<
+      RelaxedSearchState,
+      RouteId,
+      RelaxedSearchHopData
+    >,
+    rippedRouteIds: ReadonlySet<RouteId>,
+  ): void {
+    for (const hop of path.hops) {
+      for (const resource of hop.data?.resources ?? []) {
+        for (const ownerRouteId of resource.owners) {
+          if (!rippedRouteIds.has(ownerRouteId)) continue
+
+          if (resource.kind === "port") {
+            this.incrementLearnedPenalty(
+              this.learnedPortPenaltyByRouteId,
+              ownerRouteId,
+              resource.portId,
+            )
+          } else {
+            this.incrementLearnedPenalty(
+              this.learnedRegionPenaltyByRouteId,
+              ownerRouteId,
+              resource.regionId,
+            )
+          }
+        }
+      }
+    }
+  }
+
+  private incrementLearnedPenalty<TKey extends number>(
+    penaltyByRouteId: Map<RouteId, Map<TKey, number>>,
+    routeId: RouteId,
+    key: TKey,
+  ): void {
+    const routePenalties = penaltyByRouteId.get(routeId) ?? new Map()
+    routePenalties.set(
+      key,
+      (routePenalties.get(key) ?? 0) +
+        SELECTIVE_RERIP_RESOURCE_HISTORY_INCREMENT,
+    )
+    penaltyByRouteId.set(routeId, routePenalties)
   }
 
   private addCongestionCostForSelectiveRerip(): void {
