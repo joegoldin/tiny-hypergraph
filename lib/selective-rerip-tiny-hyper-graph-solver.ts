@@ -85,6 +85,8 @@ export type SelectiveReripTinyHyperGraphStats = {
   lastAlternateSearchExpandedLabelCount: number
   currentRouteSearchIterationCount: number
   topRouteSearchIterationCounts: RouteSearchIterationCount[]
+  boundaryGroupReripCount: number
+  boundaryGroupAdditionalOwnerCount: number
 }
 
 const createInitialSelectiveReripStats =
@@ -106,6 +108,8 @@ const createInitialSelectiveReripStats =
     lastAlternateSearchExpandedLabelCount: 0,
     currentRouteSearchIterationCount: 0,
     topRouteSearchIterationCounts: [],
+    boundaryGroupReripCount: 0,
+    boundaryGroupAdditionalOwnerCount: 0,
   })
 
 export function orderConnectionsByNetCardinality<TConnection>(
@@ -300,10 +304,18 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       return
     }
 
-    const directOwnerRouteIds = [...directPath.owners]
-    this.selectiveReripStats.lastDirectBlockerResources = directPath.hops
+    const directBlockerResources = directPath.hops
       .flatMap((hop) => hop.data?.resources ?? [])
-      .map((resource) => this.describeBlockerResource(resource))
+    const boundaryOwnerRouteIds =
+      this.getOrderedPhysicalBoundaryOwnerRouteIds(directBlockerResources)
+    const directOwnerRouteIds = [...directPath.owners]
+    const addedBoundaryOwnerCount = boundaryOwnerRouteIds.filter(
+      (routeId) => !directPath.owners.has(routeId),
+    ).length
+    this.selectiveReripStats.lastDirectBlockerResources =
+      directBlockerResources.map((resource) =>
+        this.describeBlockerResource(resource),
+      )
     const repeatedOwnerRouteIds: RouteId[] = []
     for (const ownerRouteId of directOwnerRouteIds) {
       const count = this.incrementFailedOwnerPair(failedRouteId, ownerRouteId)
@@ -349,6 +361,9 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       directOwnerRouteIds,
       alternateOwnerRouteIds,
     })
+    for (const boundaryOwnerRouteId of boundaryOwnerRouteIds) {
+      rippedRouteIds.add(boundaryOwnerRouteId)
+    }
     const alternateOnlyOwnerRouteIds = (alternateOwnerRouteIds ?? []).filter(
       (ownerRouteId) => !directPath.owners.has(ownerRouteId),
     )
@@ -363,11 +378,38 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     this.state.ripCount += 1
     this.state.currentRouteId = undefined
     this.state.currentRouteNetId = undefined
-    this.state.unroutedRoutes = orderRoutesAfterSelectiveRerip({
-      failedRouteId,
-      pendingRouteIds: this.state.unroutedRoutes,
-      rippedRouteIds,
-    })
+    if (addedBoundaryOwnerCount > 0) {
+      const pendingRouteIds = this.state.unroutedRoutes.filter(
+        (routeId) =>
+          routeId !== failedRouteId && !rippedRouteIds.has(routeId),
+      )
+      const orderedBoundaryOwnerRouteIds = boundaryOwnerRouteIds.filter(
+        (routeId) => rippedRouteIds.has(routeId),
+      )
+      const orderedBoundaryOwnerRouteIdSet = new Set(
+        orderedBoundaryOwnerRouteIds,
+      )
+      const otherRippedRouteIds = [...rippedRouteIds].filter(
+        (routeId) =>
+          routeId !== failedRouteId &&
+          !orderedBoundaryOwnerRouteIdSet.has(routeId),
+      )
+      this.state.unroutedRoutes = [
+        failedRouteId,
+        ...orderedBoundaryOwnerRouteIds,
+        ...otherRippedRouteIds,
+        ...pendingRouteIds,
+      ]
+      this.selectiveReripStats.boundaryGroupReripCount += 1
+      this.selectiveReripStats.boundaryGroupAdditionalOwnerCount +=
+        addedBoundaryOwnerCount
+    } else {
+      this.state.unroutedRoutes = orderRoutesAfterSelectiveRerip({
+        failedRouteId,
+        pendingRouteIds: this.state.unroutedRoutes,
+        rippedRouteIds,
+      })
+    }
     this.state.candidateQueue.clear()
     this.resetCandidateBestCosts()
     this.state.goalPortId = -1
@@ -587,6 +629,76 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     }
 
     return ownersByPort
+  }
+
+  private getOrderedPhysicalBoundaryOwnerRouteIds(
+    blockerResources: readonly SelectiveReripBlockerResource[],
+  ): RouteId[] {
+    const routeNetId = this.state.currentRouteNetId
+    if (routeNetId === undefined) return []
+
+    const ownersByPort = this.getPortOwners()
+    const orderedOwnerRouteIds: RouteId[] = []
+    const orderedOwnerRouteIdSet = new Set<RouteId>()
+
+    for (const resource of blockerResources) {
+      if (resource.kind !== "port") continue
+      const blockedRegions = this.topology.incidentPortRegion[resource.portId]
+      if (blockedRegions?.length !== 2) continue
+      const blockedZ = this.topology.portZ[resource.portId]
+      const blockedX = this.topology.portX[resource.portId]
+      const blockedY = this.topology.portY[resource.portId]
+      const boundaryPortIds: PortId[] = []
+
+      for (let portId = 0; portId < this.topology.portCount; portId++) {
+        if (this.topology.portZ[portId] !== blockedZ) continue
+        const regions = this.topology.incidentPortRegion[portId]
+        if (
+          regions?.length !== 2 ||
+          !regions.includes(blockedRegions[0]!) ||
+          !regions.includes(blockedRegions[1]!)
+        ) {
+          continue
+        }
+        boundaryPortIds.push(portId)
+      }
+
+      if (
+        !boundaryPortIds.some(
+          (portId) => this.state.portAssignment[portId] === -1,
+        )
+      ) {
+        continue
+      }
+
+      boundaryPortIds.sort(
+        (left, right) =>
+          Math.hypot(
+            this.topology.portX[left]! - blockedX!,
+            this.topology.portY[left]! - blockedY!,
+          ) -
+            Math.hypot(
+              this.topology.portX[right]! - blockedX!,
+              this.topology.portY[right]! - blockedY!,
+            ) ||
+          left - right,
+      )
+
+      for (const portId of boundaryPortIds) {
+        for (const ownerRouteId of ownersByPort.get(portId) ?? []) {
+          if (
+            this.problem.routeNet[ownerRouteId] === routeNetId ||
+            orderedOwnerRouteIdSet.has(ownerRouteId)
+          ) {
+            continue
+          }
+          orderedOwnerRouteIdSet.add(ownerRouteId)
+          orderedOwnerRouteIds.push(ownerRouteId)
+        }
+      }
+    }
+
+    return orderedOwnerRouteIds
   }
 
   private getHardBlockedCrossingOwners(
