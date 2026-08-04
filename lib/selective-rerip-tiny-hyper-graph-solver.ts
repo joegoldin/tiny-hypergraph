@@ -189,6 +189,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   private countedRouteId: RouteId | undefined
 
+  private batchFinalRouteSolver?: BatchSelectiveFinalRouteSolver
+
   constructor(
     topology: TinyHyperGraphTopology,
     problem: TinyHyperGraphProblem,
@@ -245,6 +247,40 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
         ...this.selectiveReripStats.lastAlternateOwnerRouteIds,
       ],
       lastRippedRouteIds: [...this.selectiveReripStats.lastRippedRouteIds],
+    }
+  }
+
+  protected override createGreedyFinalRouteSolver(
+    options: TinyHyperGraphSolverOptions,
+  ): BatchSelectiveFinalRouteSolver {
+    const solver = new BatchSelectiveFinalRouteSolver(
+      this.topology,
+      this.problem,
+      options,
+    )
+    this.batchFinalRouteSolver = solver
+    return solver
+  }
+
+  override tryFinalAcceptance(): void {
+    super.tryFinalAcceptance()
+
+    const finalSolver = this.batchFinalRouteSolver
+    if (!finalSolver) return
+
+    const committedRouteIds = new Set(
+      finalSolver.state.regionSegments.flatMap((segments) =>
+        segments.map(([routeId]) => routeId),
+      ),
+    )
+    this.stats = {
+      ...this.stats,
+      batchFinalRouteOwnerCount: finalSolver.batchFinalRouteOwnerCount,
+      batchFinalRouteCommittedRouteCount: committedRouteIds.size,
+      batchFinalRoutePendingRouteCount:
+        finalSolver.state.unroutedRoutes.length +
+        (finalSolver.state.currentRouteId === undefined ? 0 : 1),
+      batchFinalRouteIterations: finalSolver.iterations,
     }
   }
 
@@ -662,7 +698,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     return secondLesserInsideFirst !== secondGreaterInsideFirst
   }
 
-  private rebuildCommittedState(rippedRouteIds: ReadonlySet<RouteId>): void {
+  protected rebuildCommittedState(rippedRouteIds: ReadonlySet<RouteId>): void {
     this.state.regionSegments = this.state.regionSegments.map((segments) =>
       segments.filter(([routeId]) => !rippedRouteIds.has(routeId)),
     )
@@ -770,5 +806,51 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     return connectionId === undefined
       ? String(routeId)
       : `${routeId} (${String(connectionId)})`
+  }
+}
+
+class BatchSelectiveFinalRouteSolver extends SelectiveReripTinyHyperGraphSolver {
+  batchFinalRouteOwnerCount = 0
+
+  override _setup(): void {
+    const pendingRouteIds = [...this.state.unroutedRoutes]
+    const pendingRouteIdSet = new Set(pendingRouteIds)
+    const ownerRouteIds = new Set<RouteId>()
+
+    for (const routeId of pendingRouteIds) {
+      this.state.currentRouteId = routeId
+      this.state.currentRouteNetId = this.problem.routeNet[routeId]
+      const blockerPath = this.findRelaxedBlockerPath()
+      if (!blockerPath.found) continue
+
+      for (const ownerRouteId of blockerPath.owners) {
+        if (!pendingRouteIdSet.has(ownerRouteId)) {
+          ownerRouteIds.add(ownerRouteId)
+        }
+      }
+    }
+
+    this.state.currentRouteId = undefined
+    this.state.currentRouteNetId = undefined
+    if (ownerRouteIds.size > 0) {
+      this.rebuildCommittedState(ownerRouteIds)
+      this.state.unroutedRoutes = [...pendingRouteIds, ...ownerRouteIds]
+      this.state.candidateQueue.clear()
+      this.resetCandidateBestCosts()
+      this.state.goalPortId = -1
+    }
+    this.batchFinalRouteOwnerCount = ownerRouteIds.size
+    this.stats = {
+      ...this.stats,
+      batchFinalRouteOwnerCount: ownerRouteIds.size,
+      batchFinalRouteInitialPendingRouteCount: pendingRouteIds.length,
+    }
+
+    super._setup()
+  }
+
+  override onOutOfCandidates(): void {
+    this.failed = true
+    this.error = "BatchSelectiveFinalRouteSolver ran out of candidates"
   }
 }
