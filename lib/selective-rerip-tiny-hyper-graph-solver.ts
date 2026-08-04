@@ -72,6 +72,8 @@ export type SelectiveReripTinyHyperGraphStats = {
   lastRippedRouteIds: RouteId[]
   lastRelaxedSearchExpandedLabelCount: number
   lastAlternateSearchExpandedLabelCount: number
+  learnedPortResourceCount: number
+  learnedRegionResourceCount: number
   currentRouteSearchIterationCount: number
   topRouteSearchIterationCounts: RouteSearchIterationCount[]
 }
@@ -92,6 +94,8 @@ const createInitialSelectiveReripStats =
     lastRippedRouteIds: [],
     lastRelaxedSearchExpandedLabelCount: 0,
     lastAlternateSearchExpandedLabelCount: 0,
+    learnedPortResourceCount: 0,
+    learnedRegionResourceCount: 0,
     currentRouteSearchIterationCount: 0,
     topRouteSearchIterationCounts: [],
   })
@@ -151,7 +155,7 @@ export function orderRoutesAfterSelectiveRerip(params: {
     (routeId) => routeId !== params.failedRouteId,
   )
 
-  return [params.failedRouteId, ...pendingRouteIds, ...rippedRouteIds]
+  return [params.failedRouteId, ...rippedRouteIds, ...pendingRouteIds]
 }
 
 /**
@@ -221,6 +225,11 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
     return {
       ...this.selectiveReripStats,
+      learnedPortResourceCount: [...this.learnedPortPenaltyByRouteId.values()]
+        .reduce((count, penalties) => count + penalties.size, 0),
+      learnedRegionResourceCount: [
+        ...this.learnedRegionPenaltyByRouteId.values(),
+      ].reduce((count, penalties) => count + penalties.size, 0),
       currentRouteSearchIterationCount:
         this.currentRouteSearchIterationCount,
       topRouteSearchIterationCounts,
