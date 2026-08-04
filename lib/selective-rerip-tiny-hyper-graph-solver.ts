@@ -174,6 +174,7 @@ export function orderRoutesAfterSelectiveRerip(params: {
 export function orderConflictComponentRoutes(params: {
   pendingRouteIds: readonly RouteId[]
   failedOwnerPairs: readonly FailedOwnerPairCount[]
+  routeDifficultyById?: ReadonlyMap<RouteId, number>
 }): ConflictComponentRouteOrder {
   const ownersByFailedRouteId = new Map<RouteId, RouteId[]>()
   for (const { failedRouteId, ownerRouteId } of params.failedOwnerPairs) {
@@ -213,7 +214,10 @@ export function orderConflictComponentRoutes(params: {
   const routeIds: RouteId[] = []
   while (readyRouteIds.length > 0) {
     readyRouteIds.sort(
-      (left, right) => routeRank.get(left)! - routeRank.get(right)!,
+      (left, right) =>
+        (params.routeDifficultyById?.get(right) ?? 0) -
+          (params.routeDifficultyById?.get(left) ?? 0) ||
+        routeRank.get(left)! - routeRank.get(right)!,
     )
     const routeId = readyRouteIds.shift()!
     routeIds.push(routeId)
@@ -323,6 +327,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     const conflictOrder = orderConflictComponentRoutes({
       pendingRouteIds,
       failedOwnerPairs: this.getSelectiveReripStats().failedOwnerPairs,
+      routeDifficultyById: this.getRouteDifficultyById(),
     })
     return [...conflictOrder.routeIds, ...conflictOrder.cyclicRouteIds]
   }
@@ -334,6 +339,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       this.topology,
       this.problem,
       this.getSelectiveReripStats().failedOwnerPairs,
+      this.getRouteDifficultyById(),
       options,
     )
     this.conflictComponentFinalRouteSolver = solver
@@ -382,6 +388,15 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       this.countedRouteId = undefined
       this.currentRouteSearchIterationCount = 0
     }
+  }
+
+  private getRouteDifficultyById(): Map<RouteId, number> {
+    return new Map(
+      Array.from(
+        this.maxRouteSearchIterationCountByRouteId,
+        (difficulty, routeId) => [routeId, difficulty] as const,
+      ),
+    )
   }
 
   override onOutOfCandidates(): void {
@@ -893,6 +908,7 @@ class ConflictComponentFinalRouteSolver extends SelectiveReripTinyHyperGraphSolv
     topology: TinyHyperGraphTopology,
     problem: TinyHyperGraphProblem,
     private readonly failedOwnerPairs: readonly FailedOwnerPairCount[],
+    private readonly routeDifficultyById: ReadonlyMap<RouteId, number>,
     options?: TinyHyperGraphSolverOptions,
   ) {
     super(topology, problem, options)
@@ -902,6 +918,7 @@ class ConflictComponentFinalRouteSolver extends SelectiveReripTinyHyperGraphSolv
     const conflictOrder = orderConflictComponentRoutes({
       pendingRouteIds: this.state.unroutedRoutes,
       failedOwnerPairs: this.failedOwnerPairs,
+      routeDifficultyById: this.routeDifficultyById,
     })
     this.conflictComponentRouteCount =
       conflictOrder.routeIds.length + conflictOrder.cyclicRouteIds.length

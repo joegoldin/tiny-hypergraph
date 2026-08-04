@@ -10,9 +10,13 @@ test("orders the connected conflict component with blocked routes before owners"
         { failedRouteId: 5, ownerRouteId: 2, count: 1 },
         { failedRouteId: 10, ownerRouteId: 9, count: 1 },
       ],
+      routeDifficultyById: new Map([
+        [8, 10],
+        [3, 20],
+      ]),
     }),
   ).toEqual({
-    routeIds: [8, 3, 5, 2],
+    routeIds: [3, 8, 5, 2],
     cyclicRouteIds: [],
   })
 })
