@@ -57,6 +57,7 @@ export type SelectiveReripTinyHyperGraphStats = {
   maxFailedOwnerPairCount: number
   failedOwnerPairs: FailedOwnerPairCount[]
   lastFailedRouteId?: RouteId
+  lastDirectBlockerResources: SelectiveReripBlockerResource[]
   lastDirectOwnerRouteIds: RouteId[]
   lastRepeatedOwnerRouteIds: RouteId[]
   lastAlternateOwnerRouteIds: RouteId[]
@@ -75,6 +76,7 @@ const createInitialSelectiveReripStats =
     failedOwnerPairCount: 0,
     maxFailedOwnerPairCount: 0,
     failedOwnerPairs: [],
+    lastDirectBlockerResources: [],
     lastDirectOwnerRouteIds: [],
     lastRepeatedOwnerRouteIds: [],
     lastAlternateOwnerRouteIds: [],
@@ -172,6 +174,11 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
           ...pair,
         }),
       ),
+      lastDirectBlockerResources:
+        this.selectiveReripStats.lastDirectBlockerResources.map((resource) => ({
+          ...resource,
+          owners: [...resource.owners],
+        })),
       lastDirectOwnerRouteIds: [
         ...this.selectiveReripStats.lastDirectOwnerRouteIds,
       ],
@@ -200,6 +207,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
         ? directPath.reason
         : "no_blocker_path"
       this.selectiveReripStats.lastFailedRouteId = failedRouteId
+      this.selectiveReripStats.lastDirectBlockerResources = []
       this.selectiveReripStats.lastDirectOwnerRouteIds = []
       this.selectiveReripStats.lastRepeatedOwnerRouteIds = []
       this.selectiveReripStats.lastAlternateOwnerRouteIds = []
@@ -213,6 +221,9 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     }
 
     const directOwnerRouteIds = [...directPath.owners]
+    this.selectiveReripStats.lastDirectBlockerResources = directPath.hops
+      .flatMap((hop) => hop.data?.resources ?? [])
+      .map((resource) => ({ ...resource, owners: [...resource.owners] }))
     const repeatedOwnerRouteIds: RouteId[] = []
     for (const ownerRouteId of directOwnerRouteIds) {
       const count = this.incrementFailedOwnerPair(failedRouteId, ownerRouteId)
