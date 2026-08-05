@@ -274,6 +274,12 @@ const createSingleRouteProblem = (
     problem.portPenalty === undefined
       ? undefined
       : new Float64Array(problem.portPenalty),
+  portalLayerRefinementLockedRouteMask:
+    problem.portalLayerRefinementLockedRouteMask === undefined
+      ? undefined
+      : Int8Array.from([
+          problem.portalLayerRefinementLockedRouteMask[routeId] ?? 0,
+        ]),
 })
 
 const getUsedPortIdsForSolvedRoute = (
@@ -432,6 +438,10 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
         duplicatedPortData.duplicatePortUseCount = useCount
         duplicatedPortData.duplicatePortProximity = duplicatePortProximity
         duplicatedPortData.repairReason = "congested-port"
+        if (typeof duplicatedPortData.physicalPortGroupId === "string") {
+          duplicatedPortData.physicalPortGroupId =
+            `${duplicatedPortData.physicalPortGroupId}::duplicate-${duplicateIndex}`
+        }
 
         ports.push({
           ...sourcePort,
