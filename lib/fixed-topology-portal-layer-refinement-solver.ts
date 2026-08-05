@@ -268,8 +268,36 @@ const createSolvedSolver = (
     getReplaySolverOptions(options),
   )
   resetSolvedState(solver)
-  for (const routePlan of routePlans) {
-    appendRoutePlanToSolver(solver, routePlan)
+  const expectedSegmentCount = routePlans.reduce(
+    (count, routePlan) => count + routePlan.orderedRegionIds.length,
+    0,
+  )
+  if (
+    problem.initialAssignments &&
+    problem.initialAssignments.length === expectedSegmentCount
+  ) {
+    for (const assignment of problem.initialAssignments) {
+      solver.state.currentRouteNetId =
+        problem.routeNet[assignment.routeId]!
+      solver.state.regionSegments[assignment.regionId]!.push([
+        assignment.routeId,
+        assignment.fromPortId,
+        assignment.toPortId,
+      ])
+      solver.state.portAssignment[assignment.fromPortId] =
+        solver.state.currentRouteNetId
+      solver.state.portAssignment[assignment.toPortId] =
+        solver.state.currentRouteNetId
+      solver.appendSegmentToRegionCache(
+        assignment.regionId,
+        assignment.fromPortId,
+        assignment.toPortId,
+      )
+    }
+  } else {
+    for (const routePlan of routePlans) {
+      appendRoutePlanToSolver(solver, routePlan)
+    }
   }
   solver.state.currentRouteNetId = undefined
   solver.solved = true
@@ -809,6 +837,21 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
         baselineSummary.maxRegionCost + epsilon &&
       candidateSummary.totalRegionCost <=
         baselineSummary.totalRegionCost + epsilon
+    const intersectionCountsDidNotWorsen = touchedRegionIds.every(
+      (regionId) => {
+        const before = savedCaches.get(regionId)!
+        const after =
+          this.refinedSolver.state.regionIntersectionCaches[regionId]!
+        return (
+          after.existingSameLayerIntersections <=
+            before.existingSameLayerIntersections &&
+          after.existingCrossingLayerIntersections <=
+            before.existingCrossingLayerIntersections &&
+          after.existingEntryExitLayerChanges <=
+            before.existingEntryExitLayerChanges
+        )
+      },
+    )
     const viaDemandImproved =
       candidateSummary.predictedViaDemand <
       baselineSummary.predictedViaDemand
@@ -816,6 +859,7 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
     if (
       !hasValidPortAssignments ||
       !regionCostDidNotWorsen ||
+      !intersectionCountsDidNotWorsen ||
       !viaDemandImproved
     ) {
       for (const regionId of touchedRegionIds) {
@@ -827,7 +871,10 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
       this.refinedSolver.state.portAssignment = savedPortAssignment
       if (!hasValidPortAssignments) {
         this.refinementStats.rejectedForPortConflictCount += 1
-      } else if (!regionCostDidNotWorsen) {
+      } else if (
+        !regionCostDidNotWorsen ||
+        !intersectionCountsDidNotWorsen
+      ) {
         this.refinementStats.rejectedForRegionCostCount += 1
       }
       return false
