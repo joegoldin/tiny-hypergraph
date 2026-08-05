@@ -1,9 +1,7 @@
 import { BaseSolver } from "@tscircuit/solver-utils"
 import type { GraphicsObject } from "graphics-debug"
 import { convertToSerializedHyperGraph } from "./compat/convertToSerializedHyperGraph"
-import {
-  computeEstimatedViaDemand,
-} from "./computeRegionCost"
+import { computeEstimatedViaDemand } from "./computeRegionCost"
 import {
   createEmptyRegionIntersectionCache,
   TinyHyperGraphSolver,
@@ -71,8 +69,7 @@ const cloneRegionIntersectionCache = (
   lesserAngles: new Int32Array(cache.lesserAngles),
   greaterAngles: new Int32Array(cache.greaterAngles),
   layerMasks: new Int32Array(cache.layerMasks),
-  existingCrossingLayerIntersections:
-    cache.existingCrossingLayerIntersections,
+  existingCrossingLayerIntersections: cache.existingCrossingLayerIntersections,
   existingSameLayerIntersections: cache.existingSameLayerIntersections,
   existingEntryExitLayerChanges: cache.existingEntryExitLayerChanges,
   existingRegionCost: cache.existingRegionCost,
@@ -84,9 +81,10 @@ const getSharedRegionId = (
   fromPortId: PortId,
   toPortId: PortId,
 ): RegionId => {
-  const sharedRegionIds = (topology.incidentPortRegion[fromPortId] ?? []).filter(
-    (regionId) =>
-      (topology.incidentPortRegion[toPortId] ?? []).includes(regionId),
+  const sharedRegionIds = (
+    topology.incidentPortRegion[fromPortId] ?? []
+  ).filter((regionId) =>
+    (topology.incidentPortRegion[toPortId] ?? []).includes(regionId),
   )
 
   if (sharedRegionIds.length !== 1) {
@@ -277,8 +275,7 @@ const createSolvedSolver = (
     problem.initialAssignments.length === expectedSegmentCount
   ) {
     for (const assignment of problem.initialAssignments) {
-      solver.state.currentRouteNetId =
-        problem.routeNet[assignment.routeId]!
+      solver.state.currentRouteNetId = problem.routeNet[assignment.routeId]!
       solver.state.regionSegments[assignment.regionId]!.push([
         assignment.routeId,
         assignment.fromPortId,
@@ -518,11 +515,8 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
     ) {
       if (
         routePlan.physicalGroupIds[portIndex]! >= 0 &&
-        this.getAlternativePorts(
-          routePlan,
-          portIndex,
-          usedRouteIdsByPort,
-        ).length > 1
+        this.getAlternativePorts(routePlan, portIndex, usedRouteIdsByPort)
+          .length > 1
       ) {
         return true
       }
@@ -623,8 +617,7 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
       for (const [segmentRouteId, fromPortId, toPortId] of this.refinedSolver
         .state.regionSegments[regionId] ?? []) {
         if (segmentRouteId === routeId) continue
-        solver.state.currentRouteNetId =
-          this.problem.routeNet[segmentRouteId]!
+        solver.state.currentRouteNetId = this.problem.routeNet[segmentRouteId]!
         solver.state.regionSegments[regionId]!.push([
           segmentRouteId,
           fromPortId,
@@ -643,11 +636,7 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
     const domains = routePlan.orderedPortIds.map((currentPortId, portIndex) =>
       portIndex === 0 || portIndex === routePlan.orderedPortIds.length - 1
         ? [currentPortId]
-        : this.getAlternativePorts(
-            routePlan,
-            portIndex,
-            usedRouteIdsByPort,
-          ),
+        : this.getAlternativePorts(routePlan, portIndex, usedRouteIdsByPort),
     )
     const touchedRegionIds = new Set(routePlan.orderedRegionIds)
     const backgroundSolver = this.createBackgroundSolver(
@@ -705,11 +694,7 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
           const existingCandidate = nextCandidatesByPort.get(toPortId)
           if (
             !existingCandidate ||
-            compareDpCandidates(
-              this.topology,
-              candidate,
-              existingCandidate,
-            ) < 0
+            compareDpCandidates(this.topology, candidate, existingCandidate) < 0
           ) {
             nextCandidatesByPort.set(toPortId, candidate)
           }
@@ -773,25 +758,41 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
     this.lastAcceptedRegionIds = []
     if (
       candidate.portIds.every(
-        (portId, portIndex) =>
-          portId === routePlan.orderedPortIds[portIndex],
+        (portId, portIndex) => portId === routePlan.orderedPortIds[portIndex],
       )
     ) {
       return false
     }
 
     const baselineSummary = summarizeState(this.refinedSolver)
-    const touchedRegionIds = [...new Set(routePlan.orderedRegionIds)]
+    const changedSegmentIndices: number[] = []
+    for (
+      let segmentIndex = 0;
+      segmentIndex < routePlan.orderedRegionIds.length;
+      segmentIndex++
+    ) {
+      if (
+        routePlan.orderedPortIds[segmentIndex] !==
+          candidate.portIds[segmentIndex] ||
+        routePlan.orderedPortIds[segmentIndex + 1] !==
+          candidate.portIds[segmentIndex + 1]
+      ) {
+        changedSegmentIndices.push(segmentIndex)
+      }
+    }
+    const touchedRegionIds = [
+      ...new Set(
+        changedSegmentIndices.map(
+          (segmentIndex) => routePlan.orderedRegionIds[segmentIndex]!,
+        ),
+      ),
+    ]
     const savedSegments = new Map(
       touchedRegionIds.map((regionId) => [
         regionId,
         this.refinedSolver.state.regionSegments[regionId]!.map(
           ([routeId, fromPortId, toPortId]) =>
-            [routeId, fromPortId, toPortId] as [
-              RouteId,
-              PortId,
-              PortId,
-            ],
+            [routeId, fromPortId, toPortId] as [RouteId, PortId, PortId],
         ),
       ]),
     )
@@ -808,22 +809,35 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
     )
 
     for (const regionId of touchedRegionIds) {
-      this.refinedSolver.state.regionSegments[regionId] = this.refinedSolver
-        .state.regionSegments[regionId]!.filter(
-          ([routeId]) => routeId !== routePlan.routeId,
+      const candidateSegments = routePlan.orderedRegionIds
+        .flatMap((candidateRegionId, segmentIndex) =>
+          candidateRegionId === regionId ? [segmentIndex] : [],
         )
-    }
-    for (
-      let segmentIndex = 0;
-      segmentIndex < routePlan.orderedRegionIds.length;
-      segmentIndex++
-    ) {
-      const regionId = routePlan.orderedRegionIds[segmentIndex]!
-      this.refinedSolver.state.regionSegments[regionId]!.push([
-        routePlan.routeId,
-        candidate.portIds[segmentIndex]!,
-        candidate.portIds[segmentIndex + 1]!,
-      ])
+        .map(
+          (segmentIndex) =>
+            [
+              routePlan.routeId,
+              candidate.portIds[segmentIndex]!,
+              candidate.portIds[segmentIndex + 1]!,
+            ] as [RouteId, PortId, PortId],
+        )
+      let candidateSegmentIndex = 0
+      this.refinedSolver.state.regionSegments[regionId] =
+        this.refinedSolver.state.regionSegments[regionId]!.map((segment) => {
+          if (
+            segment[0] !== routePlan.routeId ||
+            candidateSegmentIndex >= candidateSegments.length
+          ) {
+            return segment
+          }
+          return candidateSegments[candidateSegmentIndex++]!
+        })
+
+      if (candidateSegmentIndex !== candidateSegments.length) {
+        throw new Error(
+          `Route ${routePlan.routeId} changed segment count in region ${regionId}`,
+        )
+      }
     }
     for (const regionId of touchedRegionIds) {
       this.rebuildRegionCache(regionId)
@@ -853,14 +867,17 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
       },
     )
     const viaDemandImproved =
-      candidateSummary.predictedViaDemand <
-      baselineSummary.predictedViaDemand
+      candidateSummary.predictedViaDemand < baselineSummary.predictedViaDemand
+    const entryExitLayerChangesImproved =
+      candidateSummary.entryExitLayerChanges <
+      baselineSummary.entryExitLayerChanges
 
     if (
       !hasValidPortAssignments ||
       !regionCostDidNotWorsen ||
       !intersectionCountsDidNotWorsen ||
-      !viaDemandImproved
+      !viaDemandImproved ||
+      !entryExitLayerChangesImproved
     ) {
       for (const regionId of touchedRegionIds) {
         this.refinedSolver.state.regionSegments[regionId] =
@@ -871,10 +888,7 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
       this.refinedSolver.state.portAssignment = savedPortAssignment
       if (!hasValidPortAssignments) {
         this.refinementStats.rejectedForPortConflictCount += 1
-      } else if (
-        !regionCostDidNotWorsen ||
-        !intersectionCountsDidNotWorsen
-      ) {
+      } else if (!regionCostDidNotWorsen || !intersectionCountsDidNotWorsen) {
         this.refinementStats.rejectedForRegionCostCount += 1
       }
       return false
@@ -890,8 +904,9 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
       if (fromPortId === toPortId) continue
       this.changes.push({
         routeId: routePlan.routeId,
-        physicalPortGroupId:
-          routePlan.physicalGroupIds[portIndex]! as PhysicalPortGroupId,
+        physicalPortGroupId: routePlan.physicalGroupIds[
+          portIndex
+        ]! as PhysicalPortGroupId,
         fromPortId,
         toPortId,
         fromZ: this.topology.portZ[fromPortId]!,
@@ -931,8 +946,9 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
     if (candidate && this.tryCandidate(routePlan, candidate)) {
       const affectedRouteIds = new Set<RouteId>([routeId])
       for (const regionId of this.lastAcceptedRegionIds) {
-        for (const [affectedRouteId] of this.refinedSolver.state
-          .regionSegments[regionId] ?? []) {
+        for (const [affectedRouteId] of this.refinedSolver.state.regionSegments[
+          regionId
+        ] ?? []) {
           affectedRouteIds.add(affectedRouteId)
         }
       }

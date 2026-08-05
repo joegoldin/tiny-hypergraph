@@ -130,12 +130,12 @@ const graph = {
 test("refines portal layers while preserving the fixed region sequence", () => {
   const { topology, problem, solution } = loadSerializedHyperGraph(graph)
   expect(topology.physicalPortalGroupCount).toBe(2)
-  expect(
-    topology.portPhysicalGroupId?.[1],
-  ).toBe(topology.portPhysicalGroupId?.[2])
-  expect(
-    topology.portPhysicalGroupId?.[3],
-  ).toBe(topology.portPhysicalGroupId?.[4])
+  expect(topology.portPhysicalGroupId?.[1]).toBe(
+    topology.portPhysicalGroupId?.[2],
+  )
+  expect(topology.portPhysicalGroupId?.[3]).toBe(
+    topology.portPhysicalGroupId?.[4],
+  )
   const solver = new FixedTopologyPortalLayerRefinementSolver(
     topology,
     problem,
@@ -158,10 +158,9 @@ test("refines portal layers while preserving the fixed region sequence", () => {
     output.solvedRoutes?.[0]?.path.map((candidate) => candidate.portId),
   ).toEqual(["start-port", "g1-z0", "g2-z0", "end-port"])
   const stagedSvg = getSvgFromGraphicsObject(
-    stackGraphicsVertically(
-      [beforeRefinementGraphics, solver.visualize()],
-      { titles: ["before refinement", "after refinement"] },
-    ),
+    stackGraphicsVertically([beforeRefinementGraphics, solver.visualize()], {
+      titles: ["before refinement", "after refinement"],
+    }),
   )
   expect(stagedSvg).toMatchSvgSnapshot(import.meta.path)
 
@@ -175,8 +174,7 @@ test("refines portal layers while preserving the fixed region sequence", () => {
   expect(repeatedSolver.getOutput()).toEqual(output)
 
   const lockedLoad = loadSerializedHyperGraph(graph)
-  lockedLoad.problem.portalLayerRefinementLockedRouteMask =
-    Int8Array.from([1])
+  lockedLoad.problem.portalLayerRefinementLockedRouteMask = Int8Array.from([1])
   const lockedSolver = new FixedTopologyPortalLayerRefinementSolver(
     lockedLoad.topology,
     lockedLoad.problem,
@@ -211,7 +209,124 @@ test("refines portal layers while preserving the fixed region sequence", () => {
     )
   reservedAlternativeSolver.solve()
   expect(reservedAlternativeSolver.stats.acceptedCandidateCount).toBe(0)
+  expect(reservedAlternativeSolver.routePlans[0]?.orderedPortIds).toEqual([
+    0, 1, 4, 5,
+  ])
+})
+
+test("replaces changed segments in place without reordering other routes", () => {
+  const multiRouteGraph = structuredClone(graph) as SerializedHyperGraph
+  multiRouteGraph.regions.push(
+    createRegion("b-start", ["b-start-port"]),
+    createRegion("b-end", ["b-end-port"]),
+  )
+  for (const [regionId, pointIds] of [
+    ["r0", ["b-start-port", "b-g1"]],
+    ["r1", ["b-g1", "b-g2"]],
+    ["r2", ["b-g2", "b-end-port"]],
+  ] as const) {
+    multiRouteGraph.regions
+      .find((region) => region.regionId === regionId)!
+      .pointIds.push(...pointIds)
+  }
+  multiRouteGraph.ports.push(
+    {
+      portId: "b-start-port",
+      region1Id: "b-start",
+      region2Id: "r0",
+      d: { x: -3, y: 4, z: 0 },
+    },
+    {
+      portId: "b-g1",
+      region1Id: "r0",
+      region2Id: "r1",
+      d: { x: -1, y: 4, z: 0 },
+    },
+    {
+      portId: "b-g2",
+      region1Id: "r1",
+      region2Id: "r2",
+      d: { x: 1, y: 4, z: 0 },
+    },
+    {
+      portId: "b-end-port",
+      region1Id: "r2",
+      region2Id: "b-end",
+      d: { x: 3, y: 4, z: 0 },
+    },
+  )
+  multiRouteGraph.connections?.push({
+    connectionId: "route-b",
+    startRegionId: "b-start",
+    endRegionId: "b-end",
+  })
+  multiRouteGraph.solvedRoutes?.push({
+    connection: {
+      connectionId: "route-b",
+      startRegionId: "b-start",
+      endRegionId: "b-end",
+    },
+    requiredRip: false,
+    path: [
+      {
+        portId: "b-start-port",
+        nextRegionId: "r0",
+        g: 0,
+        h: 0,
+        f: 0,
+        hops: 0,
+        ripRequired: false,
+      },
+      {
+        portId: "b-g1",
+        lastRegionId: "r0",
+        nextRegionId: "r1",
+        g: 1,
+        h: 0,
+        f: 1,
+        hops: 1,
+        ripRequired: false,
+      },
+      {
+        portId: "b-g2",
+        lastRegionId: "r1",
+        nextRegionId: "r2",
+        g: 2,
+        h: 0,
+        f: 2,
+        hops: 2,
+        ripRequired: false,
+      },
+      {
+        portId: "b-end-port",
+        lastRegionId: "r2",
+        nextRegionId: "b-end",
+        g: 3,
+        h: 0,
+        f: 3,
+        hops: 3,
+        ripRequired: false,
+      },
+    ],
+  })
+
+  const { topology, problem, solution } =
+    loadSerializedHyperGraph(multiRouteGraph)
+  const solver = new FixedTopologyPortalLayerRefinementSolver(
+    topology,
+    problem,
+    solution,
+  )
+  const routeOrderBefore = solver.refinedSolver.state.regionSegments.map(
+    (segments) => segments.map(([routeId]) => routeId),
+  )
+
+  solver.solve()
+
+  expect(solver.stats.acceptedCandidateCount).toBe(1)
   expect(
-    reservedAlternativeSolver.routePlans[0]?.orderedPortIds,
-  ).toEqual([0, 1, 4, 5])
+    solver.refinedSolver.state.regionSegments.map((segments) =>
+      segments.map(([routeId]) => routeId),
+    ),
+  ).toEqual(routeOrderBefore)
 })

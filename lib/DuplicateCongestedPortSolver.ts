@@ -439,8 +439,7 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
         duplicatedPortData.duplicatePortProximity = duplicatePortProximity
         duplicatedPortData.repairReason = "congested-port"
         if (typeof duplicatedPortData.physicalPortGroupId === "string") {
-          duplicatedPortData.physicalPortGroupId =
-            `${duplicatedPortData.physicalPortGroupId}::duplicate-${duplicateIndex}`
+          duplicatedPortData.physicalPortGroupId = `${duplicatedPortData.physicalPortGroupId}::source-${sourcePortId}::duplicate-${duplicateIndex}`
         }
 
         ports.push({
