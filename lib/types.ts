@@ -55,8 +55,11 @@ export interface FixedTopologyPortalLayerRefinementStats {
   acceptedCandidateCount: number
   touchedRegionCount: number
   rejectedForRegionCostCount: number
+  rejectedForIntersectionRegressionCount: number
   rejectedForPortConflictCount: number
   rejectedForLockedAssignmentCount: number
+  rejectedForNoViaDemandImprovementCount: number
+  rejectedForNoEntryExitImprovementCount: number
   portalLayerRefinementMs: number
 }
 

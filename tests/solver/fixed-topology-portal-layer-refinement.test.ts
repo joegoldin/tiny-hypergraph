@@ -182,6 +182,7 @@ test("refines portal layers while preserving the fixed region sequence", () => {
   )
   lockedSolver.solve()
   expect(lockedSolver.stats.acceptedCandidateCount).toBe(0)
+  expect(lockedSolver.stats.rejectedForLockedAssignmentCount).toBe(1)
   expect(
     lockedSolver
       .getOutput()
@@ -209,6 +210,12 @@ test("refines portal layers while preserving the fixed region sequence", () => {
     )
   reservedAlternativeSolver.solve()
   expect(reservedAlternativeSolver.stats.acceptedCandidateCount).toBe(0)
+  expect(
+    reservedAlternativeSolver.stats.rejectedForNoViaDemandImprovementCount,
+  ).toBeGreaterThan(0)
+  expect(
+    reservedAlternativeSolver.stats.rejectedForNoEntryExitImprovementCount,
+  ).toBeGreaterThan(0)
   expect(reservedAlternativeSolver.routePlans[0]?.orderedPortIds).toEqual([
     0, 1, 4, 5,
   ])

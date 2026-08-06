@@ -407,8 +407,11 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
     acceptedCandidateCount: 0,
     touchedRegionCount: 0,
     rejectedForRegionCostCount: 0,
+    rejectedForIntersectionRegressionCount: 0,
     rejectedForPortConflictCount: 0,
     rejectedForLockedAssignmentCount: 0,
+    rejectedForNoViaDemandImprovementCount: 0,
+    rejectedForNoEntryExitImprovementCount: 0,
     portalLayerRefinementMs: 0,
   }
 
@@ -761,6 +764,8 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
         (portId, portIndex) => portId === routePlan.orderedPortIds[portIndex],
       )
     ) {
+      this.refinementStats.rejectedForNoViaDemandImprovementCount += 1
+      this.refinementStats.rejectedForNoEntryExitImprovementCount += 1
       return false
     }
 
@@ -888,8 +893,18 @@ export class FixedTopologyPortalLayerRefinementSolver extends BaseSolver {
       this.refinedSolver.state.portAssignment = savedPortAssignment
       if (!hasValidPortAssignments) {
         this.refinementStats.rejectedForPortConflictCount += 1
-      } else if (!regionCostDidNotWorsen || !intersectionCountsDidNotWorsen) {
+      }
+      if (!regionCostDidNotWorsen) {
         this.refinementStats.rejectedForRegionCostCount += 1
+      }
+      if (!intersectionCountsDidNotWorsen) {
+        this.refinementStats.rejectedForIntersectionRegressionCount += 1
+      }
+      if (!viaDemandImproved) {
+        this.refinementStats.rejectedForNoViaDemandImprovementCount += 1
+      }
+      if (!entryExitLayerChangesImproved) {
+        this.refinementStats.rejectedForNoEntryExitImprovementCount += 1
       }
       return false
     }
