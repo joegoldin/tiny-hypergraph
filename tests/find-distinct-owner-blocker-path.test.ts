@@ -58,3 +58,28 @@ test("prioritizes distinct owners, retains non-dominated labels, and reports exh
     expandedLabelCount: 0,
   })
 })
+
+test("returns a discovered blocker path when exact search reaches its limit", () => {
+  type LimitedState = "start" | "decoy" | "goal"
+  type LimitedHop = DistinctOwnerBlockerHop<LimitedState, string>
+  const result = findDistinctOwnerBlockerPath({
+    start: "start" as LimitedState,
+    getStateKey: (state) => state,
+    isGoal: (state) => state === "goal",
+    getHops: (state): LimitedHop[] =>
+      state === "start"
+        ? [
+            { state: "decoy", distance: 0 },
+            { state: "goal", distance: 1, owners: ["blocker"] },
+          ]
+        : [],
+    maxExpandedLabels: 1,
+  })
+
+  if (!result.found) {
+    throw new Error(`Expected a discovered path, got ${result.reason}`)
+  }
+  expect(result.states).toEqual(["start", "goal"])
+  expect([...result.owners]).toEqual(["blocker"])
+  expect(result.expandedLabelCount).toBe(1)
+})
