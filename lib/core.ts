@@ -211,6 +211,15 @@ export interface Candidate {
   h: number
 }
 
+export interface TinyHyperGraphCandidateQueue {
+  readonly length: number
+  toArray(): Candidate[]
+  clear(): void
+  queue(candidate: Candidate): void
+  dequeue(): Candidate | undefined
+  isClosedHop?(portId: PortId, nextRegionId: RegionId): boolean
+}
+
 export interface TinyHyperGraphWorkingState {
   // portAssignment[portId] = NetId, -1 means unassigned
   portAssignment: Int32Array
@@ -226,7 +235,7 @@ export interface TinyHyperGraphWorkingState {
 
   unroutedRoutes: RouteId[]
 
-  candidateQueue: MinHeap<Candidate>
+  candidateQueue: TinyHyperGraphCandidateQueue
   candidateBestCostByHopId: Float64Array | Map<HopId, number>
   candidateBestCostGenerationByHopId: Uint32Array | Map<HopId, number>
   candidateBestCostGeneration: number
@@ -606,10 +615,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
       if (neighborPortId === currentCandidate.portId) continue
       if (problem.portSectionMask[neighborPortId] === 0) continue
 
-      const g = this.computeG(currentCandidate, neighborPortId)
-      if (!Number.isFinite(g)) continue
-      const h = this.computeH(neighborPortId)
-
       const nextRegionId =
         topology.incidentPortRegion[neighborPortId][0] ===
         currentCandidate.nextRegionId
@@ -622,6 +627,15 @@ export class TinyHyperGraphSolver extends BaseSolver {
       ) {
         continue
       }
+      if (
+        state.candidateQueue.isClosedHop?.(neighborPortId, nextRegionId) === true
+      ) {
+        continue
+      }
+
+      const g = this.computeG(currentCandidate, neighborPortId)
+      if (!Number.isFinite(g)) continue
+      const h = this.computeH(neighborPortId)
 
       const newCandidate = {
         prevRegionId: currentCandidate.nextRegionId,

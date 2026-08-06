@@ -28,6 +28,10 @@ export class IndexedCandidateHeap {
     this.closedHopIds.clear()
   }
 
+  isClosedHop(portId: number, nextRegionId: number): boolean {
+    return this.closedHopIds.has(portId * this.regionCount + nextRegionId)
+  }
+
   queue(candidate: Candidate): void {
     const hopId = this.getHopId(candidate)
     if (this.closedHopIds.has(hopId)) return
