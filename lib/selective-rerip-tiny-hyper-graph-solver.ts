@@ -7,7 +7,6 @@ import {
 import { DistanceAwareTinyHyperGraphSolver } from "./distance-aware-tiny-hypergraph-solver"
 import {
   findAdditiveOwnerBlockerPath,
-  findDistinctOwnerBlockerPath,
   type DistinctOwnerBlockerSearchOptions,
   type DistinctOwnerBlockerSearchResult,
 } from "./find-distinct-owner-blocker-path"
@@ -338,21 +337,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
           forbiddenOwnerRouteIds,
         }),
     }
-    const exactPath = findDistinctOwnerBlockerPath({
-      ...searchOptions,
-      maxExpandedLabels: this.getRelaxedSearchExpansionLimit(),
-    })
-    if (exactPath.found || exactPath.reason === "no_path") return exactPath
-
     return findAdditiveOwnerBlockerPath(searchOptions)
-  }
-
-  protected getRelaxedSearchExpansionLimit(): number {
-    let incidentHopCount = 0
-    for (const incidentRegions of this.topology.incidentPortRegion) {
-      incidentHopCount += incidentRegions.length
-    }
-    return Math.max(4096, incidentHopCount)
   }
 
   private getRelaxedSearchHops(params: {
