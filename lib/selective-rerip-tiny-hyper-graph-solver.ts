@@ -253,6 +253,11 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       alternatePath = this.findRelaxedBlockerPath(
         new Set(repeatedOwnerRouteIds),
       )
+      if (alternatePath.found) {
+        for (const ownerRouteId of alternatePath.owners) {
+          this.incrementFailedOwnerPair(failedRouteId, ownerRouteId)
+        }
+      }
     }
 
     const alternateOwnerRouteIds = alternatePath
