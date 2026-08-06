@@ -578,19 +578,13 @@ export class TinyHyperGraphSolver extends BaseSolver {
         h: 0,
       })
       state.goalPortId = problem.routeEndPort[state.currentRouteId!]
-      if (
-        topology.portZ[startingPortId] !== topology.portZ[state.goalPortId]
-      ) {
-        this.layeredRegionHopDistances = getLayeredRegionHopDistances({
-          topology,
-          problem,
-          routeNetId: state.currentRouteNetId!,
-          goalPortId: state.goalPortId,
-          layerCount: this.layerCount,
-        })
-      } else {
-        this.layeredRegionHopDistances.fill(-1)
-      }
+      this.layeredRegionHopDistances = getLayeredRegionHopDistances({
+        topology,
+        problem,
+        routeNetId: state.currentRouteNetId!,
+        goalPortId: state.goalPortId,
+        layerCount: this.layerCount,
+      })
     }
 
     const currentCandidate = state.candidateQueue.dequeue()
