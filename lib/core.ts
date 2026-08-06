@@ -213,6 +213,12 @@ export interface Candidate {
   f: number
   g: number
   h: number
+
+  /**
+   * Remaining candidates from boundary-and-layer families represented by this
+   * frontier entry. Each family is ordered by increasing A* cost.
+   */
+  deferredCandidateFamilies?: Candidate[][]
 }
 
 export interface TinyHyperGraphWorkingState {
@@ -251,6 +257,7 @@ export interface TinyHyperGraphSolverOptions {
   RIP_THRESHOLD_RAMP_ATTEMPTS?: number
   RIP_CONGESTION_REGION_COST_FACTOR?: number
   USE_LAZY_ROUTE_HEURISTIC?: boolean
+  USE_LAZY_PORT_FAMILIES?: boolean
   USE_SPARSE_CANDIDATE_STORAGE?: boolean
   MAX_ITERATIONS?: number
   VERBOSE?: boolean
@@ -268,6 +275,7 @@ export interface TinyHyperGraphSolverOptionTarget {
   RIP_THRESHOLD_RAMP_ATTEMPTS: number
   RIP_CONGESTION_REGION_COST_FACTOR: number
   USE_LAZY_ROUTE_HEURISTIC?: boolean
+  USE_LAZY_PORT_FAMILIES?: boolean
   USE_SPARSE_CANDIDATE_STORAGE?: boolean
   MAX_ITERATIONS: number
   VERBOSE: boolean
@@ -307,6 +315,9 @@ export const applyTinyHyperGraphSolverOptions = (
   if (options.USE_LAZY_ROUTE_HEURISTIC !== undefined) {
     solver.USE_LAZY_ROUTE_HEURISTIC = options.USE_LAZY_ROUTE_HEURISTIC
   }
+  if (options.USE_LAZY_PORT_FAMILIES !== undefined) {
+    solver.USE_LAZY_PORT_FAMILIES = options.USE_LAZY_PORT_FAMILIES
+  }
   if (options.USE_SPARSE_CANDIDATE_STORAGE !== undefined) {
     solver.USE_SPARSE_CANDIDATE_STORAGE = options.USE_SPARSE_CANDIDATE_STORAGE
   }
@@ -342,6 +353,7 @@ export const getTinyHyperGraphSolverOptions = (
   RIP_THRESHOLD_RAMP_ATTEMPTS: solver.RIP_THRESHOLD_RAMP_ATTEMPTS,
   RIP_CONGESTION_REGION_COST_FACTOR: solver.RIP_CONGESTION_REGION_COST_FACTOR,
   USE_LAZY_ROUTE_HEURISTIC: solver.USE_LAZY_ROUTE_HEURISTIC,
+  USE_LAZY_PORT_FAMILIES: solver.USE_LAZY_PORT_FAMILIES,
   USE_SPARSE_CANDIDATE_STORAGE: solver.USE_SPARSE_CANDIDATE_STORAGE,
   MAX_ITERATIONS: solver.MAX_ITERATIONS,
   VERBOSE: solver.VERBOSE,
@@ -388,6 +400,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
   RIP_CONGESTION_REGION_COST_FACTOR = 0.1
   USE_LAZY_ROUTE_HEURISTIC = false
+  USE_LAZY_PORT_FAMILIES = false
   USE_SPARSE_CANDIDATE_STORAGE = false
 
   override MAX_ITERATIONS = 1e6
@@ -591,6 +604,8 @@ export class TinyHyperGraphSolver extends BaseSolver {
       return
     }
 
+    this.queueNextDeferredCandidates(currentCandidate)
+
     const currentCandidateHopId = this.getHopId(
       currentCandidate.portId,
       currentCandidate.nextRegionId,
@@ -605,6 +620,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
     const neighbors =
       topology.regionIncidentPorts[currentCandidate.nextRegionId]
+    const candidateFamilies = new Map<string, Candidate[]>()
 
     for (const neighborPortId of neighbors) {
       const assignedNetId = state.portAssignment[neighborPortId]
@@ -639,7 +655,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       if (!Number.isFinite(g)) continue
       const h = this.computeH(neighborPortId, nextRegionId)
 
-      const newCandidate = {
+      const newCandidate: Candidate = {
         prevRegionId: currentCandidate.nextRegionId,
         nextRegionId,
         portId: neighborPortId,
@@ -657,9 +673,56 @@ export class TinyHyperGraphSolver extends BaseSolver {
       const candidateHopId = this.getHopId(neighborPortId, nextRegionId)
       if (g >= this.getCandidateBestCost(candidateHopId)) continue
 
-      this.setCandidateBestCost(candidateHopId, g)
-      state.candidateQueue.queue(newCandidate)
+      if (!this.USE_LAZY_PORT_FAMILIES) {
+        this.queueCandidateIfBest(newCandidate)
+        continue
+      }
+
+      const familyKey = `${nextRegionId}:${topology.portZ[neighborPortId]}`
+      const family = candidateFamilies.get(familyKey) ?? []
+      family.push(newCandidate)
+      candidateFamilies.set(familyKey, family)
     }
+
+    for (const family of candidateFamilies.values()) {
+      family.sort(
+        (left, right) =>
+          left.f - right.f || left.g - right.g || left.portId - right.portId,
+      )
+      this.queueCandidateFamily(family)
+    }
+  }
+
+  private queueNextDeferredCandidates(candidate: Candidate): void {
+    for (const family of candidate.deferredCandidateFamilies ?? []) {
+      this.queueCandidateFamily(family)
+    }
+  }
+
+  private queueCandidateFamily(family: Candidate[]): void {
+    for (let index = 0; index < family.length; index++) {
+      const candidate = family[index]!
+      const remainingCandidates = family.slice(index + 1)
+      if (remainingCandidates.length > 0) {
+        candidate.deferredCandidateFamilies = [
+          ...(candidate.deferredCandidateFamilies ?? []),
+          remainingCandidates,
+        ]
+      }
+      if (this.queueCandidateIfBest(candidate)) return
+    }
+  }
+
+  private queueCandidateIfBest(candidate: Candidate): boolean {
+    const candidateHopId = this.getHopId(
+      candidate.portId,
+      candidate.nextRegionId,
+    )
+    if (candidate.g >= this.getCandidateBestCost(candidateHopId)) return false
+    if (!this.state.candidateQueue.queue(candidate)) return false
+
+    this.setCandidateBestCost(candidateHopId, candidate.g)
+    return true
   }
 
   resetCandidateBestCosts() {

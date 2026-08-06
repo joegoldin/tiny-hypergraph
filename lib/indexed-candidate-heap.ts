@@ -28,28 +28,33 @@ export class IndexedCandidateHeap {
     this.closedHopIds.clear()
   }
 
-  queue(candidate: Candidate): void {
+  queue(candidate: Candidate): boolean {
     const hopId = this.getHopId(candidate)
-    if (this.closedHopIds.has(hopId)) return
+    if (this.closedHopIds.has(hopId)) return false
 
     const existingIndex = this.indexByHopId.get(hopId)
     if (existingIndex !== undefined) {
       const existingCandidate = this.items[existingIndex]!
-      if (candidate.g >= existingCandidate.g) return
+      if (candidate.g >= existingCandidate.g) {
+        this.appendDeferredFamilies(existingCandidate, candidate)
+        return true
+      }
 
+      this.appendDeferredFamilies(candidate, existingCandidate)
       this.items[existingIndex] = candidate
       if (candidate.f <= existingCandidate.f) {
         this.siftUp(existingIndex)
       } else {
         this.siftDown(existingIndex)
       }
-      return
+      return true
     }
 
     const index = this.items.length
     this.items.push(candidate)
     this.indexByHopId.set(hopId, index)
     this.siftUp(index)
+    return true
   }
 
   dequeue(): Candidate | undefined {
@@ -71,6 +76,17 @@ export class IndexedCandidateHeap {
 
   private getHopId(candidate: Candidate): number {
     return candidate.portId * this.regionCount + candidate.nextRegionId
+  }
+
+  private appendDeferredFamilies(
+    target: Candidate,
+    source: Candidate,
+  ): void {
+    if (!source.deferredCandidateFamilies?.length) return
+    target.deferredCandidateFamilies = [
+      ...(target.deferredCandidateFamilies ?? []),
+      ...source.deferredCandidateFamilies,
+    ]
   }
 
   private swap(leftIndex: number, rightIndex: number): void {

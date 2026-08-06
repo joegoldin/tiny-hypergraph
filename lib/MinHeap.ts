@@ -16,9 +16,10 @@ export class MinHeap<T> {
     this.items.length = 0
   }
 
-  queue(item: T) {
+  queue(item: T): boolean {
     this.items.push(item)
     this.siftUp(this.items.length - 1)
+    return true
   }
 
   dequeue(): T | undefined {
