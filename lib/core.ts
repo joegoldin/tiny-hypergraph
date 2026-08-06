@@ -1511,9 +1511,11 @@ export class TinyHyperGraphSolver extends BaseSolver {
   computeH(neighborPortId: PortId): number {
     const precomputedHCost = this.problemSetup.portHCostToEndOfRoute
     if (precomputedHCost) {
-      return precomputedHCost[
-        neighborPortId * this.problem.routeCount + this.state.currentRouteId!
-      ]
+      return (
+        precomputedHCost[
+          neighborPortId * this.problem.routeCount + this.state.currentRouteId!
+        ] * 100
+      )
     }
 
     const endPortId = this.problem.routeEndPort[this.state.currentRouteId!]
@@ -1521,7 +1523,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       this.topology.portX[neighborPortId] - this.topology.portX[endPortId]
     const dy =
       this.topology.portY[neighborPortId] - this.topology.portY[endPortId]
-    return Math.hypot(dx, dy) * this.DISTANCE_TO_COST
+    return Math.hypot(dx, dy) * this.DISTANCE_TO_COST * 100
   }
 
   override visualize(): GraphicsObject {
