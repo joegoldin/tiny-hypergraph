@@ -13,6 +13,13 @@ test("selects alternate owners and rejects a failed route as its only blocker", 
     }),
   ]).toEqual([3, 4])
 
+  expect([
+    ...selectOwnerRouteIdsToRip({
+      failedRouteId: 1,
+      directOwnerRouteIds: [2, 3],
+    }),
+  ]).toEqual([2, 3])
+
   expect(() =>
     selectOwnerRouteIdsToRip({
       failedRouteId: 1,

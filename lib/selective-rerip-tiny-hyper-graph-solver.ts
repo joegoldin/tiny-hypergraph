@@ -228,26 +228,11 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       | undefined
     if (repeatedOwnerRouteIds.length > 0) {
       this.selectiveReripStats.alternateBlockerSearchCount += 1
+      // Avoid a repeated blocker when possible. If every path uses it, the
+      // direct path remains valid and is safer than discarding every route.
       alternatePath = this.findRelaxedBlockerPath(
         new Set(repeatedOwnerRouteIds),
       )
-      if (!alternatePath.found) {
-        this.selectiveReripStats.globalReripCount += 1
-        this.selectiveReripStats.globalReripReason = alternatePath.reason
-        this.selectiveReripStats.lastFailedRouteId = failedRouteId
-        this.selectiveReripStats.lastDirectOwnerRouteIds = directOwnerRouteIds
-        this.selectiveReripStats.lastRepeatedOwnerRouteIds =
-          repeatedOwnerRouteIds
-        this.selectiveReripStats.lastAlternateOwnerRouteIds = []
-        this.selectiveReripStats.lastRippedRouteIds = []
-        this.selectiveReripStats.lastRelaxedSearchExpandedLabelCount =
-          directPath.expandedLabelCount
-        this.selectiveReripStats.lastAlternateSearchExpandedLabelCount =
-          alternatePath.expandedLabelCount
-        super.onOutOfCandidates()
-        this.publishSelectiveReripStats()
-        return
-      }
     }
 
     const alternateOwnerRouteIds = alternatePath?.found
