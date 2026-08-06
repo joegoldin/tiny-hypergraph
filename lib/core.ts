@@ -372,6 +372,9 @@ export class TinyHyperGraphSolver extends BaseSolver {
   private hasLoggedNeverSuccessfullyRoutedRoutes = false
   private staticallyUnroutableRoutes: StaticallyUnroutableRouteSummary[] = []
   private minimumPortPenaltyByRegion: Float64Array
+  private readonly minimumPortPenaltyByRoute: Array<
+    Float64Array | undefined
+  >
   private segmentGeometryScratch: SegmentGeometryScratch = {
     lesserAngle: 0,
     greaterAngle: 0,
@@ -405,6 +408,10 @@ export class TinyHyperGraphSolver extends BaseSolver {
     super()
     applyTinyHyperGraphSolverOptions(this, options)
     this.minimumPortPenaltyByRegion = new Float64Array(topology.regionCount)
+    this.minimumPortPenaltyByRoute = Array.from(
+      { length: problem.routeCount },
+      () => undefined,
+    )
     this.state = {
       portAssignment: new Int32Array(topology.portCount).fill(-1),
       regionSegments: Array.from({ length: topology.regionCount }, () => []),
@@ -572,12 +579,8 @@ export class TinyHyperGraphSolver extends BaseSolver {
         h: 0,
       })
       state.goalPortId = problem.routeEndPort[state.currentRouteId!]
-      this.minimumPortPenaltyByRegion = getMinimumPortPenaltyByRegion({
-        topology,
-        problem,
-        routeNetId: state.currentRouteNetId!,
-        goalPortId: state.goalPortId,
-      })
+      this.minimumPortPenaltyByRegion =
+        this.getMinimumPortPenaltyByRegionForRoute(state.currentRouteId!)
     }
 
     const currentCandidate = state.candidateQueue.dequeue()
@@ -740,6 +743,22 @@ export class TinyHyperGraphSolver extends BaseSolver {
       reservedNetId === -2 ||
       (reservedNetId !== -1 && reservedNetId !== this.state.currentRouteNetId)
     )
+  }
+
+  private getMinimumPortPenaltyByRegionForRoute(
+    routeId: RouteId,
+  ): Float64Array {
+    const cachedCosts = this.minimumPortPenaltyByRoute[routeId]
+    if (cachedCosts) return cachedCosts
+
+    const costs = getMinimumPortPenaltyByRegion({
+      topology: this.topology,
+      problem: this.problem,
+      routeNetId: this.problem.routeNet[routeId]!,
+      goalPortId: this.problem.routeEndPort[routeId]!,
+    })
+    this.minimumPortPenaltyByRoute[routeId] = costs
+    return costs
   }
 
   isRegionReservedForDifferentNet(regionId: RegionId): boolean {
