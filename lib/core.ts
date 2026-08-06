@@ -577,7 +577,24 @@ export class TinyHyperGraphSolver extends BaseSolver {
         problem,
         routeNetId: state.currentRouteNetId!,
         goalPortId: state.goalPortId,
+        portAssignment: state.portAssignment,
+        portReservationNetId:
+          this.problemSetup.portEndpointReservationNetId,
       })
+      if (problem.routeCount >= 800) {
+        console.error(
+          "[tiny-port-penalty-lower-bound]",
+          JSON.stringify({
+            routeId: state.currentRouteId,
+            connectionId:
+              problem.routeMetadata?.[state.currentRouteId!]?.connectionId,
+            startCost: getMinimumPortPenalty(
+              this.minimumPortPenaltyByRegion,
+              startingNextRegionId,
+            ),
+          }),
+        )
+      }
     }
 
     const currentCandidate = state.candidateQueue.dequeue()

@@ -12,6 +12,8 @@ type MinimumPortPenaltyParams = {
   problem: TinyHyperGraphProblem
   routeNetId: NetId
   goalPortId: PortId
+  portAssignment: Int32Array
+  portReservationNetId: Int32Array
 }
 
 const compareCandidatesByCost = (
@@ -32,6 +34,26 @@ const isRegionBlocked = ({
   return regionNetId !== -1 && regionNetId !== routeNetId
 }
 
+const isPortBlocked = ({
+  portId,
+  routeNetId,
+  portAssignment,
+  portReservationNetId,
+}: {
+  portId: PortId
+  routeNetId: NetId
+  portAssignment: Int32Array
+  portReservationNetId: Int32Array
+}): boolean => {
+  const assignedNetId = portAssignment[portId] ?? -1
+  const reservedNetId = portReservationNetId[portId] ?? -1
+  return (
+    (assignedNetId !== -1 && assignedNetId !== routeNetId) ||
+    reservedNetId === -2 ||
+    (reservedNetId !== -1 && reservedNetId !== routeNetId)
+  )
+}
+
 /**
  * Computes the minimum remaining fallback-port cost from each region to the
  * goal. This is a lower bound because it ignores congestion and port ownership.
@@ -41,6 +63,8 @@ export const getMinimumPortPenaltyByRegion = ({
   problem,
   routeNetId,
   goalPortId,
+  portAssignment,
+  portReservationNetId,
 }: MinimumPortPenaltyParams): Float64Array => {
   const costs = new Float64Array(topology.regionCount).fill(
     Number.POSITIVE_INFINITY,
@@ -61,7 +85,17 @@ export const getMinimumPortPenaltyByRegion = ({
     if (candidate.cost !== costs[candidate.regionId]) continue
 
     for (const portId of topology.regionIncidentPorts[candidate.regionId]) {
-      if (problem.portSectionMask[portId] === 0) continue
+      if (
+        problem.portSectionMask[portId] === 0 ||
+        isPortBlocked({
+          portId,
+          routeNetId,
+          portAssignment,
+          portReservationNetId,
+        })
+      ) {
+        continue
+      }
       const nextCost = candidate.cost + (problem.portPenalty?.[portId] ?? 0)
 
       for (const neighborRegionId of topology.incidentPortRegion[portId]) {
