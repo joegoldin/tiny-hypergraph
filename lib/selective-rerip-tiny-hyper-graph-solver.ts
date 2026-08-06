@@ -126,6 +126,43 @@ export function selectOwnerRouteIdsToRip(params: {
   return rippedRouteIds
 }
 
+export function getRepeatedConflictRouteIds(params: {
+  failedRouteId: RouteId
+  failedOwnerPairCounts: ReadonlyMap<
+    RouteId,
+    ReadonlyMap<RouteId, number>
+  >
+}): Set<RouteId> {
+  const adjacentRouteIds = new Map<RouteId, Set<RouteId>>()
+  const addAdjacentRoute = (routeId: RouteId, adjacentRouteId: RouteId) => {
+    const adjacentIds = adjacentRouteIds.get(routeId) ?? new Set<RouteId>()
+    adjacentIds.add(adjacentRouteId)
+    adjacentRouteIds.set(routeId, adjacentIds)
+  }
+
+  for (const [failedRouteId, ownerCounts] of params.failedOwnerPairCounts) {
+    for (const [ownerRouteId, count] of ownerCounts) {
+      if (count < 2) continue
+      addAdjacentRoute(failedRouteId, ownerRouteId)
+      addAdjacentRoute(ownerRouteId, failedRouteId)
+    }
+  }
+
+  const conflictRouteIds = new Set<RouteId>([params.failedRouteId])
+  const pendingRouteIds = [params.failedRouteId]
+  while (pendingRouteIds.length > 0) {
+    const routeId = pendingRouteIds.pop()!
+    for (const adjacentRouteId of adjacentRouteIds.get(routeId) ?? []) {
+      if (conflictRouteIds.has(adjacentRouteId)) continue
+      conflictRouteIds.add(adjacentRouteId)
+      pendingRouteIds.push(adjacentRouteId)
+    }
+  }
+
+  conflictRouteIds.delete(params.failedRouteId)
+  return conflictRouteIds
+}
+
 export function orderRoutesAfterSelectiveRerip(params: {
   failedRouteId: RouteId
   pendingRouteIds: readonly RouteId[]
@@ -229,16 +266,26 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       | undefined
     if (repeatedOwnerRouteIds.length > 0) {
       this.selectiveReripStats.alternateBlockerSearchCount += 1
-      // Avoid a repeated blocker when possible. If every path uses it, the
-      // direct path remains valid and is safer than discarding every route.
       alternatePath = this.findRelaxedBlockerPath(
         new Set(repeatedOwnerRouteIds),
       )
     }
 
-    const alternateOwnerRouteIds = alternatePath?.found
-      ? [...alternatePath.owners]
-      : undefined
+    // If no path avoids the repeated blocker, reroute its observed conflict
+    // component without discarding unrelated completed routes.
+    const repeatedConflictRouteIds =
+      alternatePath && !alternatePath.found
+        ? getRepeatedConflictRouteIds({
+            failedRouteId,
+            failedOwnerPairCounts: this.failedOwnerPairCounts,
+          })
+        : new Set<RouteId>()
+    let alternateOwnerRouteIds: RouteId[] | undefined
+    if (alternatePath?.found) {
+      alternateOwnerRouteIds = [...alternatePath.owners]
+    } else if (repeatedConflictRouteIds.size > 0) {
+      alternateOwnerRouteIds = [...repeatedConflictRouteIds]
+    }
     const rippedRouteIds = selectOwnerRouteIdsToRip({
       failedRouteId,
       directOwnerRouteIds,

@@ -1,8 +1,23 @@
 import { expect, test } from "bun:test"
 import {
+  getRepeatedConflictRouteIds,
   orderRoutesAfterSelectiveRerip,
   selectOwnerRouteIdsToRip,
 } from "lib/selective-rerip-tiny-hyper-graph-solver"
+
+test("collects only the connected component of repeated route conflicts", () => {
+  const repeatedConflictRouteIds = getRepeatedConflictRouteIds({
+    failedRouteId: 1,
+    failedOwnerPairCounts: new Map([
+      [1, new Map([[2, 2]])],
+      [2, new Map([[3, 3]])],
+      [3, new Map([[6, 1]])],
+      [4, new Map([[5, 4]])],
+    ]),
+  })
+
+  expect([...repeatedConflictRouteIds]).toEqual([2, 3])
+})
 
 test("selects alternate owners and rejects a failed route as its only blocker", () => {
   expect([
