@@ -165,10 +165,7 @@ export const createRegionGraph = (
     regionCapacity: Float64Array.from(
       { length: topology.regionCount },
       (_, regionId) =>
-        Math.max(
-          1e-6,
-          topology.regionWidth[regionId] * topology.regionHeight[regionId],
-        ),
+        Math.max(1, topology.regionIncidentPorts[regionId]?.length ?? 0),
     ),
     regionMetadata: topology.regionMetadata,
     edges,

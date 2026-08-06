@@ -246,6 +246,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       directOwnerRouteIds,
       alternateOwnerRouteIds,
     })
+    this.removeRegionPathGuidanceForRoutes(rippedRouteIds)
     const alternateOnlyOwnerRouteIds = (alternateOwnerRouteIds ?? []).filter(
       (ownerRouteId) => !directPath.owners.has(ownerRouteId),
     )

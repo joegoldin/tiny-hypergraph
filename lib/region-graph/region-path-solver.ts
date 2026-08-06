@@ -14,6 +14,8 @@ import { range } from "../utils"
 import { visualizeRegionGraph } from "./visualizeRegionGraph"
 
 export interface RegionPathSolverOptions {
+  DISTANCE_TO_COST?: number
+  MM_COST_FOR_FULL_BOUNDARY?: number
   MM_COST_FOR_FULL_REGION?: number
   MAX_ITERATIONS?: number
 }
@@ -22,6 +24,7 @@ export interface RegionPathCandidate {
   regionId: RegionId
   prevCandidate?: RegionPathCandidate
   prevRegionId?: RegionId
+  enteredThroughEdgeId?: number
   g: number
   h: number
   f: number
@@ -40,6 +43,7 @@ export interface RegionPathSolverOutput {
 }
 
 export interface RegionPathWorkingState {
+  boundaryUsage: Int32Array
   regionUsage: Int32Array
   regionAssignedRoutes: Array<RouteId[]>
   solvedRouteRegionIds: Array<RegionId[]>
@@ -62,7 +66,10 @@ const compareCandidatesByF = (
 export class RegionPathSolver extends BaseSolver {
   regionGraph: RegionGraph
   regionProblem: RegionPathProblem
+  boundaryCapacity: Float64Array
 
+  DISTANCE_TO_COST = 1
+  MM_COST_FOR_FULL_BOUNDARY = 20
   MM_COST_FOR_FULL_REGION = 20
   override MAX_ITERATIONS = 1e6
 
@@ -77,7 +84,22 @@ export class RegionPathSolver extends BaseSolver {
 
     this.regionGraph = createRegionGraph(topology)
     this.regionProblem = createRegionPathProblem(topology, problem)
+    this.boundaryCapacity = Float64Array.from(
+      this.regionGraph.edges,
+      (edge) =>
+        edge.portIds.reduce(
+          (count, portId) =>
+            count + (problem.portSectionMask[portId] === 0 ? 0 : 1),
+          0,
+        ) || 1,
+    )
 
+    if (options?.DISTANCE_TO_COST !== undefined) {
+      this.DISTANCE_TO_COST = options.DISTANCE_TO_COST
+    }
+    if (options?.MM_COST_FOR_FULL_BOUNDARY !== undefined) {
+      this.MM_COST_FOR_FULL_BOUNDARY = options.MM_COST_FOR_FULL_BOUNDARY
+    }
     if (options?.MM_COST_FOR_FULL_REGION !== undefined) {
       this.MM_COST_FOR_FULL_REGION = options.MM_COST_FOR_FULL_REGION
     }
@@ -86,6 +108,7 @@ export class RegionPathSolver extends BaseSolver {
     }
 
     this.state = {
+      boundaryUsage: new Int32Array(this.regionGraph.edgeCount),
       regionUsage: new Int32Array(this.regionGraph.regionCount),
       regionAssignedRoutes: Array.from(
         { length: this.regionGraph.regionCount },
@@ -147,11 +170,12 @@ export class RegionPathSolver extends BaseSolver {
       this.resetCandidateBestCosts()
 
       const startCost = this.computeRegionEntryCost(startRegionId)
+      const startHeuristic = this.computeDistanceToGoal(startRegionId)
       const startCandidate: RegionPathCandidate = {
         regionId: startRegionId,
         g: startCost,
-        h: 0,
-        f: startCost,
+        h: startHeuristic,
+        f: startCost + startHeuristic,
       }
 
       this.setCandidateBestCost(startRegionId, startCost)
@@ -200,7 +224,11 @@ export class RegionPathSolver extends BaseSolver {
         continue
       }
 
-      const g = currentCandidate.g + this.computeRegionEntryCost(nextRegionId)
+      const g =
+        currentCandidate.g +
+        edge.centerDistance * this.DISTANCE_TO_COST +
+        this.computeBoundaryTraversalCost(edge.edgeId) +
+        this.computeRegionEntryCost(nextRegionId)
       if (!Number.isFinite(g)) {
         continue
       }
@@ -209,13 +237,15 @@ export class RegionPathSolver extends BaseSolver {
         continue
       }
 
+      const h = this.computeDistanceToGoal(nextRegionId)
       const nextCandidate: RegionPathCandidate = {
         regionId: nextRegionId,
         prevRegionId: currentCandidate.regionId,
         prevCandidate: currentCandidate,
+        enteredThroughEdgeId: edge.edgeId,
         g,
-        h: 0,
-        f: g,
+        h,
+        f: g + h,
       }
 
       this.setCandidateBestCost(nextRegionId, g)
@@ -265,6 +295,30 @@ export class RegionPathSolver extends BaseSolver {
     return (nextUsage / regionCapacity) * this.MM_COST_FOR_FULL_REGION
   }
 
+  computeBoundaryTraversalCost(edgeId: number) {
+    const edge = this.regionGraph.edges[edgeId]
+    if (!edge) return Number.POSITIVE_INFINITY
+
+    const nextUsage = this.state.boundaryUsage[edgeId] + 1
+    return (
+      (nextUsage / this.boundaryCapacity[edgeId]) *
+      this.MM_COST_FOR_FULL_BOUNDARY
+    )
+  }
+
+  computeDistanceToGoal(regionId: RegionId) {
+    const goalRegionId = this.state.goalRegionId
+    if (goalRegionId < 0) return 0
+
+    const dx =
+      this.regionGraph.regionCenterX[regionId] -
+      this.regionGraph.regionCenterX[goalRegionId]
+    const dy =
+      this.regionGraph.regionCenterY[regionId] -
+      this.regionGraph.regionCenterY[goalRegionId]
+    return Math.hypot(dx, dy) * this.DISTANCE_TO_COST
+  }
+
   getSolvedRegionPath(finalCandidate: RegionPathCandidate): RegionId[] {
     const regionPath: RegionId[] = []
     let cursor: RegionPathCandidate | undefined = finalCandidate
@@ -289,6 +343,14 @@ export class RegionPathSolver extends BaseSolver {
     state.solvedRouteRegionIds[currentRouteId] = solvedRegionPath
     state.solvedRouteCosts[currentRouteId] = finalCandidate.g
 
+    let cursor: RegionPathCandidate | undefined = finalCandidate
+    while (cursor) {
+      if (cursor.enteredThroughEdgeId !== undefined) {
+        state.boundaryUsage[cursor.enteredThroughEdgeId] += 1
+      }
+      cursor = cursor.prevCandidate
+    }
+
     for (const regionId of solvedRegionPath) {
       state.regionUsage[regionId] += 1
       state.regionAssignedRoutes[regionId]!.push(currentRouteId)
@@ -307,6 +369,15 @@ export class RegionPathSolver extends BaseSolver {
 
     let maxRegionUsage = 0
     let maxUtilization = 0
+    let maxBoundaryUtilization = 0
+
+    for (const edge of regionGraph.edges) {
+      maxBoundaryUtilization = Math.max(
+        maxBoundaryUtilization,
+        state.boundaryUsage[edge.edgeId] /
+          this.boundaryCapacity[edge.edgeId],
+      )
+    }
 
     for (let regionId = 0; regionId < regionGraph.regionCount; regionId++) {
       const usage = state.regionUsage[regionId]
@@ -329,6 +400,7 @@ export class RegionPathSolver extends BaseSolver {
       openCandidateCount: state.candidateQueue.length,
       maxRegionUsage,
       maxUtilization,
+      maxBoundaryUtilization,
     }
   }
 

@@ -1361,6 +1361,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
 
     state.ripCount += 1
+    this.removeRegionPathGuidanceForRoutes(range(problem.routeCount))
     this.resetRoutingStateForRerip()
     this.stats = {
       ...this.stats,
@@ -1389,6 +1390,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
 
     state.ripCount += 1
+    this.removeRegionPathGuidanceForRoutes(range(problem.routeCount))
     this.resetRoutingStateForRerip()
     this.stats = {
       ...this.stats,
@@ -1417,18 +1419,28 @@ export class TinyHyperGraphSolver extends BaseSolver {
       return false
     }
 
-    this.routesUsingGlobalSearch.add(routeId)
+    this.removeRegionPathGuidanceForRoutes([routeId])
     this.state.unroutedRoutes.unshift(routeId)
     this.state.currentRouteId = undefined
     this.state.currentRouteNetId = undefined
     this.state.candidateQueue.clear()
     this.resetCandidateBestCosts()
     this.state.goalPortId = -1
+    return true
+  }
+
+  protected removeRegionPathGuidanceForRoutes(
+    routeIds: Iterable<RouteId>,
+  ): void {
+    if (!this.USE_REGION_PATH_GUIDANCE) return
+
+    for (const routeId of routeIds) {
+      this.routesUsingGlobalSearch.add(routeId)
+    }
     this.stats = {
       ...this.stats,
       regionPathFallbackRouteCount: this.routesUsingGlobalSearch.size,
     }
-    return true
   }
 
   private computePreferredRegionPaths(): void {
@@ -1436,6 +1448,11 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
     const regionPathSolver = new RegionPathSolver(this.topology, this.problem)
     regionPathSolver.solve()
+    this.stats = {
+      ...this.stats,
+      regionPathPlanningIterations: regionPathSolver.iterations,
+      regionPathPlanningSolved: regionPathSolver.solved,
+    }
     if (!regionPathSolver.solved || regionPathSolver.failed) return
 
     this.preferredRegionIdsByRoute =
