@@ -1447,6 +1447,22 @@ export class TinyHyperGraphSolver extends BaseSolver {
     if (!this.USE_REGION_PATH_GUIDANCE) return
 
     const regionPathSolver = new RegionPathSolver(this.topology, this.problem)
+    for (let routeId = 0; routeId < this.problem.routeCount; routeId++) {
+      const startRegionId = this.getStartingNextRegionId(
+        routeId,
+        this.problem.routeStartPort[routeId],
+      )
+      const endRegionId = this.getStartingNextRegionId(
+        routeId,
+        this.problem.routeEndPort[routeId],
+      )
+      if (startRegionId !== undefined) {
+        regionPathSolver.regionProblem.routeStartRegion[routeId] = startRegionId
+      }
+      if (endRegionId !== undefined) {
+        regionPathSolver.regionProblem.routeEndRegion[routeId] = endRegionId
+      }
+    }
     regionPathSolver.solve()
     this.stats = {
       ...this.stats,
