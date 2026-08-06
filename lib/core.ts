@@ -3,6 +3,7 @@ import type { GraphicsObject } from "graphics-debug"
 import { convertToSerializedHyperGraph } from "./compat/convertToSerializedHyperGraph"
 import {
   computeRegionCost,
+  computeRegionTraceCapacityCost,
   DEFAULT_MIN_VIA_PAD_DIAMETER,
   isKnownSingleLayerMask,
 } from "./computeRegionCost"
@@ -750,7 +751,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
     numEntryExitChanges: number,
     traceCount: number,
   ): number {
-    return computeRegionCost(
+    const intersectionCost = computeRegionCost(
       this.topology.regionWidth[regionId],
       this.topology.regionHeight[regionId],
       numSameLayerIntersections,
@@ -759,6 +760,18 @@ export class TinyHyperGraphSolver extends BaseSolver {
       traceCount,
       this.topology.regionAvailableZMask?.[regionId] ?? 0,
       this.minViaPadDiameter,
+    )
+    if (this.problem.regionNetId[regionId] !== -1) {
+      return intersectionCost
+    }
+    return (
+      intersectionCost +
+      computeRegionTraceCapacityCost(
+        this.topology.regionWidth[regionId],
+        this.topology.regionHeight[regionId],
+        traceCount,
+        this.topology.regionAvailableZMask?.[regionId] ?? 0,
+      )
     )
   }
 
