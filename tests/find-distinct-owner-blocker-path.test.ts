@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import {
-  findAdditiveOwnerBlockerPath,
   findDistinctOwnerBlockerPath,
+  findSingleLabelOwnerBlockerPath,
   type DistinctOwnerBlockerHop,
 } from "lib/find-distinct-owner-blocker-path"
 
@@ -60,7 +60,7 @@ test("prioritizes distinct owners, retains non-dominated labels, and reports exh
   })
 })
 
-test("finds a valid blocker path with one additive label per state", () => {
+test("finds a valid blocker path with one distinct-owner label per state", () => {
   const hopsByState: Record<State, Hop[]> = {
     start: [
       { state: "shared", distance: 1, owners: ["owner-a", "owner-b"] },
@@ -69,7 +69,7 @@ test("finds a valid blocker path with one additive label per state", () => {
     shared: [{ state: "goal", distance: 1, owners: [] }],
     goal: [],
   }
-  const result = findAdditiveOwnerBlockerPath({
+  const result = findSingleLabelOwnerBlockerPath({
     start: "start" as State,
     getStateKey: (state) => state,
     isGoal: (state) => state === "goal",
@@ -84,7 +84,30 @@ test("finds a valid blocker path with one additive label per state", () => {
   expect(result.expandedLabelCount).toBe(1)
 })
 
-test("uses an admissible distance estimate to avoid additive-search detours", () => {
+test("counts a repeated blocker owner once in single-label search", () => {
+  const hopsByState: Record<State, Hop[]> = {
+    start: [
+      { state: "shared", distance: 1, owners: ["owner-a"] },
+      { state: "goal", distance: 1, owners: ["owner-b", "owner-c"] },
+    ],
+    shared: [{ state: "goal", distance: 1, owners: ["owner-a"] }],
+    goal: [],
+  }
+  const result = findSingleLabelOwnerBlockerPath({
+    start: "start" as State,
+    getStateKey: (state) => state,
+    isGoal: (state) => state === "goal",
+    getHops: (state) => hopsByState[state],
+  })
+
+  if (!result.found) {
+    throw new Error(`Expected a path, got ${result.reason}`)
+  }
+  expect(result.states).toEqual(["start", "shared", "goal"])
+  expect([...result.owners]).toEqual(["owner-a"])
+})
+
+test("uses an admissible distance estimate to avoid single-label detours", () => {
   const hopsByState: Record<State, Hop[]> = {
     start: [
       { state: "shared", distance: 1 },
@@ -93,7 +116,7 @@ test("uses an admissible distance estimate to avoid additive-search detours", ()
     shared: [{ state: "goal", distance: 100 }],
     goal: [],
   }
-  const result = findAdditiveOwnerBlockerPath({
+  const result = findSingleLabelOwnerBlockerPath({
     start: "start" as State,
     getStateKey: (state) => state,
     isGoal: (state) => state === "goal",

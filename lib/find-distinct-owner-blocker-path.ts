@@ -22,7 +22,7 @@ export type DistinctOwnerBlockerSearchOptions<
   maxExpandedLabels?: number
 }
 
-export type AdditiveOwnerBlockerSearchOptions<
+export type SingleLabelOwnerBlockerSearchOptions<
   TState,
   TStateKey,
   TOwner,
@@ -74,13 +74,13 @@ type SearchLabel<TState, TStateKey, TOwner, THopData> = {
   active: boolean
 }
 
-type AdditiveSearchLabel<TState, TStateKey, TOwner, THopData> = SearchLabel<
+type SingleLabelSearchLabel<TState, TStateKey, TOwner, THopData> = SearchLabel<
   TState,
   TStateKey,
   TOwner,
   THopData
 > & {
-  blockerOccurrenceCount: number
+  distinctOwnerCount: number
   estimatedTotalDistance: number
 }
 
@@ -200,27 +200,26 @@ const reconstructSuccessfulSearch = <TState, TStateKey, TOwner, THopData>(
   }
 }
 
-const compareAdditiveLabels = <TState, TStateKey, TOwner, THopData>(
-  left: AdditiveSearchLabel<TState, TStateKey, TOwner, THopData>,
-  right: AdditiveSearchLabel<TState, TStateKey, TOwner, THopData>,
+const compareSingleLabels = <TState, TStateKey, TOwner, THopData>(
+  left: SingleLabelSearchLabel<TState, TStateKey, TOwner, THopData>,
+  right: SingleLabelSearchLabel<TState, TStateKey, TOwner, THopData>,
 ): number =>
-  left.blockerOccurrenceCount - right.blockerOccurrenceCount ||
+  left.distinctOwnerCount - right.distinctOwnerCount ||
   left.estimatedTotalDistance - right.estimatedTotalDistance ||
   left.distance - right.distance ||
   left.queueOrder - right.queueOrder
 
 /**
- * Finds a blocker path in polynomial time by counting blockers per hop. Unlike
- * the exact distinct-owner search, this keeps one best label per topology
- * state, so it is suitable as a guaranteed fallback on large graphs.
+ * Finds a blocker path with bounded state by keeping only the best
+ * distinct-owner label at each topology state.
  */
-export const findAdditiveOwnerBlockerPath = <
+export const findSingleLabelOwnerBlockerPath = <
   TState,
   TStateKey,
   TOwner,
   THopData = unknown,
 >(
-  options: AdditiveOwnerBlockerSearchOptions<
+  options: SingleLabelOwnerBlockerSearchOptions<
     TState,
     TStateKey,
     TOwner,
@@ -234,19 +233,19 @@ export const findAdditiveOwnerBlockerPath = <
     startEstimatedRemainingDistance < 0
   ) {
     throw new Error(
-      "Additive-owner blocker estimates require finite distances >= 0",
+      "Single-label blocker estimates require finite distances >= 0",
     )
   }
   const queue = new MinHeap<
-    AdditiveSearchLabel<TState, TStateKey, TOwner, THopData>
-  >([], compareAdditiveLabels)
+    SingleLabelSearchLabel<TState, TStateKey, TOwner, THopData>
+  >([], compareSingleLabels)
   const bestLabelByStateKey = new Map<
     TStateKey,
-    AdditiveSearchLabel<TState, TStateKey, TOwner, THopData>
+    SingleLabelSearchLabel<TState, TStateKey, TOwner, THopData>
   >()
   let nextQueueOrder = 0
   let expandedLabelCount = 0
-  const startLabel: AdditiveSearchLabel<
+  const startLabel: SingleLabelSearchLabel<
     TState,
     TStateKey,
     TOwner,
@@ -255,7 +254,7 @@ export const findAdditiveOwnerBlockerPath = <
     state: options.start,
     stateKey: options.getStateKey(options.start),
     owners: new Set<TOwner>(),
-    blockerOccurrenceCount: 0,
+    distinctOwnerCount: 0,
     estimatedTotalDistance: startEstimatedRemainingDistance,
     distance: 0,
     parent: null,
@@ -277,20 +276,22 @@ export const findAdditiveOwnerBlockerPath = <
     for (const hop of options.getHops(current.state)) {
       if (!Number.isFinite(hop.distance) || hop.distance < 0) {
         throw new Error(
-          "Additive-owner blocker hops require finite distances >= 0",
+          "Single-label blocker hops require finite distances >= 0",
         )
       }
 
       const hopOwners = new Set(hop.owners ?? [])
-      const blockerOccurrenceCount =
-        current.blockerOccurrenceCount + hopOwners.size
+      let distinctOwnerCount = current.owners.size
+      for (const owner of hopOwners) {
+        if (!current.owners.has(owner)) distinctOwnerCount++
+      }
       const distance = current.distance + hop.distance
       const stateKey = options.getStateKey(hop.state)
       const bestLabel = bestLabelByStateKey.get(stateKey)
       if (
         bestLabel &&
-        (bestLabel.blockerOccurrenceCount < blockerOccurrenceCount ||
-          (bestLabel.blockerOccurrenceCount === blockerOccurrenceCount &&
+        (bestLabel.distinctOwnerCount < distinctOwnerCount ||
+          (bestLabel.distinctOwnerCount === distinctOwnerCount &&
             bestLabel.distance <= distance))
       ) {
         continue
@@ -303,12 +304,12 @@ export const findAdditiveOwnerBlockerPath = <
         estimatedRemainingDistance < 0
       ) {
         throw new Error(
-          "Additive-owner blocker path and estimate distances must remain finite and >= 0",
+          "Single-label blocker path and estimate distances must remain finite and >= 0",
         )
       }
       const owners = new Set(current.owners)
       for (const owner of hopOwners) owners.add(owner)
-      const candidate: AdditiveSearchLabel<
+      const candidate: SingleLabelSearchLabel<
         TState,
         TStateKey,
         TOwner,
@@ -317,7 +318,7 @@ export const findAdditiveOwnerBlockerPath = <
         state: hop.state,
         stateKey,
         owners,
-        blockerOccurrenceCount,
+        distinctOwnerCount,
         estimatedTotalDistance: distance + estimatedRemainingDistance,
         distance,
         parent: current,

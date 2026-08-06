@@ -6,8 +6,8 @@ import {
 } from "./core"
 import { DistanceAwareTinyHyperGraphSolver } from "./distance-aware-tiny-hypergraph-solver"
 import {
-  findAdditiveOwnerBlockerPath,
-  type AdditiveOwnerBlockerSearchOptions,
+  findSingleLabelOwnerBlockerPath,
+  type SingleLabelOwnerBlockerSearchOptions,
   type DistinctOwnerBlockerSearchResult,
 } from "./find-distinct-owner-blocker-path"
 import type { PortId, RegionId, RouteId } from "./types"
@@ -318,7 +318,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     }
 
     const portOwners = this.getPortOwners()
-    const searchOptions: AdditiveOwnerBlockerSearchOptions<
+    const searchOptions: SingleLabelOwnerBlockerSearchOptions<
       RelaxedSearchState,
       number,
       RouteId,
@@ -342,7 +342,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
           forbiddenOwnerRouteIds,
         }),
     }
-    return findAdditiveOwnerBlockerPath(searchOptions)
+    return findSingleLabelOwnerBlockerPath(searchOptions)
   }
 
   private getRelaxedSearchHops(params: {
