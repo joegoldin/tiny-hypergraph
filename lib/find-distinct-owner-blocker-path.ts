@@ -22,6 +22,20 @@ export type DistinctOwnerBlockerSearchOptions<
   maxExpandedLabels?: number
 }
 
+export type AdditiveOwnerBlockerSearchOptions<
+  TState,
+  TStateKey,
+  TOwner,
+  THopData = unknown,
+> = DistinctOwnerBlockerSearchOptions<
+  TState,
+  TStateKey,
+  TOwner,
+  THopData
+> & {
+  getEstimatedRemainingDistance?: (state: TState) => number
+}
+
 export type DistinctOwnerBlockerSearchSuccess<
   TState,
   TOwner,
@@ -67,6 +81,7 @@ type AdditiveSearchLabel<TState, TStateKey, TOwner, THopData> = SearchLabel<
   THopData
 > & {
   blockerOccurrenceCount: number
+  estimatedTotalDistance: number
 }
 
 const compareLabels = <TState, TStateKey, TOwner, THopData>(
@@ -190,6 +205,7 @@ const compareAdditiveLabels = <TState, TStateKey, TOwner, THopData>(
   right: AdditiveSearchLabel<TState, TStateKey, TOwner, THopData>,
 ): number =>
   left.blockerOccurrenceCount - right.blockerOccurrenceCount ||
+  left.estimatedTotalDistance - right.estimatedTotalDistance ||
   left.distance - right.distance ||
   left.queueOrder - right.queueOrder
 
@@ -204,13 +220,23 @@ export const findAdditiveOwnerBlockerPath = <
   TOwner,
   THopData = unknown,
 >(
-  options: DistinctOwnerBlockerSearchOptions<
+  options: AdditiveOwnerBlockerSearchOptions<
     TState,
     TStateKey,
     TOwner,
     THopData
   >,
 ): DistinctOwnerBlockerSearchResult<TState, TOwner, THopData> => {
+  const startEstimatedRemainingDistance =
+    options.getEstimatedRemainingDistance?.(options.start) ?? 0
+  if (
+    !Number.isFinite(startEstimatedRemainingDistance) ||
+    startEstimatedRemainingDistance < 0
+  ) {
+    throw new Error(
+      "Additive-owner blocker estimates require finite distances >= 0",
+    )
+  }
   const queue = new MinHeap<
     AdditiveSearchLabel<TState, TStateKey, TOwner, THopData>
   >([], compareAdditiveLabels)
@@ -230,6 +256,7 @@ export const findAdditiveOwnerBlockerPath = <
     stateKey: options.getStateKey(options.start),
     owners: new Set<TOwner>(),
     blockerOccurrenceCount: 0,
+    estimatedTotalDistance: startEstimatedRemainingDistance,
     distance: 0,
     parent: null,
     incomingHop: null,
@@ -257,6 +284,18 @@ export const findAdditiveOwnerBlockerPath = <
       const owners = new Set(current.owners)
       const hopOwners = new Set(hop.owners ?? [])
       for (const owner of hopOwners) owners.add(owner)
+      const distance = current.distance + hop.distance
+      const estimatedRemainingDistance =
+        options.getEstimatedRemainingDistance?.(hop.state) ?? 0
+      if (
+        !Number.isFinite(distance) ||
+        !Number.isFinite(estimatedRemainingDistance) ||
+        estimatedRemainingDistance < 0
+      ) {
+        throw new Error(
+          "Additive-owner blocker path and estimate distances must remain finite and >= 0",
+        )
+      }
       const candidate: AdditiveSearchLabel<
         TState,
         TStateKey,
@@ -268,16 +307,13 @@ export const findAdditiveOwnerBlockerPath = <
         owners,
         blockerOccurrenceCount:
           current.blockerOccurrenceCount + hopOwners.size,
-        distance: current.distance + hop.distance,
+        estimatedTotalDistance: distance + estimatedRemainingDistance,
+        distance,
         parent: current,
         incomingHop: hop,
         queueOrder: nextQueueOrder++,
         active: true,
       }
-      if (!Number.isFinite(candidate.distance)) {
-        throw new Error("Additive-owner blocker path distance overflowed")
-      }
-
       const bestLabel = bestLabelByStateKey.get(candidate.stateKey)
       if (bestLabel && compareAdditiveLabels(bestLabel, candidate) <= 0) {
         continue

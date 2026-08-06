@@ -84,6 +84,31 @@ test("finds a valid blocker path with one additive label per state", () => {
   expect(result.expandedLabelCount).toBe(1)
 })
 
+test("uses an admissible distance estimate to avoid additive-search detours", () => {
+  const hopsByState: Record<State, Hop[]> = {
+    start: [
+      { state: "shared", distance: 1 },
+      { state: "goal", distance: 10 },
+    ],
+    shared: [{ state: "goal", distance: 100 }],
+    goal: [],
+  }
+  const result = findAdditiveOwnerBlockerPath({
+    start: "start" as State,
+    getStateKey: (state) => state,
+    isGoal: (state) => state === "goal",
+    getHops: (state) => hopsByState[state],
+    getEstimatedRemainingDistance: (state) =>
+      state === "shared" ? 100 : 0,
+  })
+
+  if (!result.found) {
+    throw new Error(`Expected a path, got ${result.reason}`)
+  }
+  expect(result.states).toEqual(["start", "goal"])
+  expect(result.expandedLabelCount).toBe(1)
+})
+
 test("returns a discovered blocker path when exact search reaches its limit", () => {
   type LimitedState = "start" | "decoy" | "goal"
   type LimitedHop = DistinctOwnerBlockerHop<LimitedState, string>

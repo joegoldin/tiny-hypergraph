@@ -7,7 +7,7 @@ import {
 import { DistanceAwareTinyHyperGraphSolver } from "./distance-aware-tiny-hypergraph-solver"
 import {
   findAdditiveOwnerBlockerPath,
-  type DistinctOwnerBlockerSearchOptions,
+  type AdditiveOwnerBlockerSearchOptions,
   type DistinctOwnerBlockerSearchResult,
 } from "./find-distinct-owner-blocker-path"
 import type { PortId, RegionId, RouteId } from "./types"
@@ -318,7 +318,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     }
 
     const portOwners = this.getPortOwners()
-    const searchOptions: DistinctOwnerBlockerSearchOptions<
+    const searchOptions: AdditiveOwnerBlockerSearchOptions<
       RelaxedSearchState,
       number,
       RouteId,
@@ -328,6 +328,11 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       getStateKey: ({ portId, nextRegionId }): number =>
         this.getHopId(portId, nextRegionId),
       isGoal: ({ portId }): boolean => portId === goalPortId,
+      getEstimatedRemainingDistance: ({ portId }): number =>
+        Math.hypot(
+          this.topology.portX[portId]! - this.topology.portX[goalPortId]!,
+          this.topology.portY[portId]! - this.topology.portY[goalPortId]!,
+        ),
       getHops: (state) =>
         this.getRelaxedSearchHops({
           state,
