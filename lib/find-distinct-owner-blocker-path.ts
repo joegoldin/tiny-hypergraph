@@ -213,6 +213,9 @@ export const findDistinctOwnerBlockerPath = <
   const queue = new SearchLabelQueue<TState, TStateKey, TOwner, THopData>()
   let nextQueueOrder = 0
   let expandedLabelCount = 0
+  const discoveredGoalLabels: Array<
+    SearchLabel<TState, TStateKey, TOwner, THopData>
+  > = []
   const startLabel: SearchLabel<TState, TStateKey, TOwner, THopData> = {
     state: options.start,
     stateKey: options.getStateKey(options.start),
@@ -235,6 +238,12 @@ export const findDistinctOwnerBlockerPath = <
       return reconstructSuccessfulSearch(current, expandedLabelCount)
     }
     if (expandedLabelCount >= maxExpandedLabels) {
+      const discoveredGoal = discoveredGoalLabels
+        .filter((label) => label.active)
+        .sort(compareLabels)[0]
+      if (discoveredGoal) {
+        return reconstructSuccessfulSearch(discoveredGoal, expandedLabelCount)
+      }
       return { found: false, reason: "expansion_limit", expandedLabelCount }
     }
     expandedLabelCount++
@@ -280,6 +289,9 @@ export const findDistinctOwnerBlockerPath = <
       survivingLabels.push(candidate)
       labelsByStateKey.set(candidate.stateKey, survivingLabels)
       queue.push(candidate)
+      if (options.isGoal(candidate.state)) {
+        discoveredGoalLabels.push(candidate)
+      }
     }
   }
 }
