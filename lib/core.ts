@@ -11,6 +11,10 @@ import {
   applyInitialAssignments,
   type TinyHyperGraphInitialAssignment,
 } from "./initialAssignments"
+import {
+  getMinimumPortPenalty,
+  getMinimumPortPenaltyByRegion,
+} from "./minimum-port-penalty-by-region"
 import { MinHeap } from "./MinHeap"
 import { shuffle } from "./shuffle"
 import type { StaticallyUnroutableRouteSummary } from "./static-reachability"
@@ -367,6 +371,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
   protected bestSolvedStateSummary?: RegionCostSummary
   private hasLoggedNeverSuccessfullyRoutedRoutes = false
   private staticallyUnroutableRoutes: StaticallyUnroutableRouteSummary[] = []
+  private minimumPortPenaltyByRegion: Float64Array
   private segmentGeometryScratch: SegmentGeometryScratch = {
     lesserAngle: 0,
     greaterAngle: 0,
@@ -399,6 +404,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
   ) {
     super()
     applyTinyHyperGraphSolverOptions(this, options)
+    this.minimumPortPenaltyByRegion = new Float64Array(topology.regionCount)
     this.state = {
       portAssignment: new Int32Array(topology.portCount).fill(-1),
       regionSegments: Array.from({ length: topology.regionCount }, () => []),
@@ -566,6 +572,12 @@ export class TinyHyperGraphSolver extends BaseSolver {
         h: 0,
       })
       state.goalPortId = problem.routeEndPort[state.currentRouteId!]
+      this.minimumPortPenaltyByRegion = getMinimumPortPenaltyByRegion({
+        topology,
+        problem,
+        routeNetId: state.currentRouteNetId!,
+        goalPortId: state.goalPortId,
+      })
     }
 
     const currentCandidate = state.candidateQueue.dequeue()
@@ -606,10 +618,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
       if (neighborPortId === currentCandidate.portId) continue
       if (problem.portSectionMask[neighborPortId] === 0) continue
 
-      const g = this.computeG(currentCandidate, neighborPortId)
-      if (!Number.isFinite(g)) continue
-      const h = this.computeH(neighborPortId)
-
       const nextRegionId =
         topology.incidentPortRegion[neighborPortId][0] ===
         currentCandidate.nextRegionId
@@ -622,6 +630,10 @@ export class TinyHyperGraphSolver extends BaseSolver {
       ) {
         continue
       }
+
+      const g = this.computeG(currentCandidate, neighborPortId)
+      if (!Number.isFinite(g)) continue
+      const h = this.computeH(neighborPortId, nextRegionId)
 
       const newCandidate = {
         prevRegionId: currentCandidate.nextRegionId,
@@ -1508,12 +1520,18 @@ export class TinyHyperGraphSolver extends BaseSolver {
     this.logNeverSuccessfullyRoutedRoutes()
   }
 
-  computeH(neighborPortId: PortId): number {
+  computeH(neighborPortId: PortId, nextRegionId: RegionId): number {
     const precomputedHCost = this.problemSetup.portHCostToEndOfRoute
+    const minimumPortPenalty = getMinimumPortPenalty(
+      this.minimumPortPenaltyByRegion,
+      nextRegionId,
+    )
     if (precomputedHCost) {
-      return precomputedHCost[
-        neighborPortId * this.problem.routeCount + this.state.currentRouteId!
-      ]
+      return (
+        precomputedHCost[
+          neighborPortId * this.problem.routeCount + this.state.currentRouteId!
+        ] + minimumPortPenalty
+      )
     }
 
     const endPortId = this.problem.routeEndPort[this.state.currentRouteId!]
@@ -1521,7 +1539,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       this.topology.portX[neighborPortId] - this.topology.portX[endPortId]
     const dy =
       this.topology.portY[neighborPortId] - this.topology.portY[endPortId]
-    return Math.hypot(dx, dy) * this.DISTANCE_TO_COST
+    return Math.hypot(dx, dy) * this.DISTANCE_TO_COST + minimumPortPenalty
   }
 
   override visualize(): GraphicsObject {
