@@ -14,6 +14,7 @@ type MinimumPortPenaltyParams = {
   goalPortId: PortId
   portAssignment: Int32Array
   portReservationNetId: Int32Array
+  regionCongestionCost: Float64Array
 }
 
 const compareCandidatesByCost = (
@@ -55,8 +56,8 @@ const isPortBlocked = ({
 }
 
 /**
- * Computes the minimum remaining fallback-port cost from each region to the
- * goal. This is a lower bound because it ignores congestion and port ownership.
+ * Computes the minimum unavoidable port and congestion cost from each region
+ * to the goal. It ignores segment geometry, so it remains a lower bound.
  */
 export const getMinimumPortPenaltyByRegion = ({
   topology,
@@ -65,6 +66,7 @@ export const getMinimumPortPenaltyByRegion = ({
   goalPortId,
   portAssignment,
   portReservationNetId,
+  regionCongestionCost,
 }: MinimumPortPenaltyParams): Float64Array => {
   const costs = new Float64Array(topology.regionCount).fill(
     Number.POSITIVE_INFINITY,
@@ -96,9 +98,11 @@ export const getMinimumPortPenaltyByRegion = ({
       ) {
         continue
       }
-      const nextCost = candidate.cost + (problem.portPenalty?.[portId] ?? 0)
-
       for (const neighborRegionId of topology.incidentPortRegion[portId]) {
+        const nextCost =
+          candidate.cost +
+          (problem.portPenalty?.[portId] ?? 0) +
+          regionCongestionCost[neighborRegionId]
         if (
           neighborRegionId === candidate.regionId ||
           isRegionBlocked({

@@ -580,6 +580,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
         portAssignment: state.portAssignment,
         portReservationNetId:
           this.problemSetup.portEndpointReservationNetId,
+        regionCongestionCost: state.regionCongestionCost,
       })
       if (problem.routeCount >= 800) {
         console.error(
