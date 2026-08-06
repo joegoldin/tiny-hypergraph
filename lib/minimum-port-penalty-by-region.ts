@@ -4,7 +4,8 @@ import type { NetId, PortId, RegionId } from "./types"
 
 type PortPenaltyEdge = {
   componentId: number
-  penalty: number
+  portId: PortId
+  neighborRegionId: RegionId
 }
 
 type ComponentPenaltyCandidate = {
@@ -26,8 +27,12 @@ export type MinimumPortPenaltyByRegion = {
 type MinimumPortPenaltyParams = {
   graph: PortPenaltyComponentGraph
   topology: TinyHyperGraphTopology
+  problem: TinyHyperGraphProblem
   routeNetId: NetId
   goalPortId: PortId
+  portAssignment: Int32Array
+  portReservationNetId: Int32Array
+  regionCongestionCost: Float64Array
 }
 
 const compareCandidatesByCost = (
@@ -127,22 +132,25 @@ const getComponentIds = ({
   }
 }
 
-const addMinimumPenaltyEdge = ({
-  edgeMaps,
+const addPortPenaltyEdge = ({
+  edgesByComponent,
   fromComponentId,
   toComponentId,
-  penalty,
+  portId,
+  neighborRegionId,
 }: {
-  edgeMaps: Array<Map<number, number>>
+  edgesByComponent: PortPenaltyEdge[][]
   fromComponentId: number
   toComponentId: number
-  penalty: number
+  portId: PortId
+  neighborRegionId: RegionId
 }): void => {
   if (fromComponentId === toComponentId) return
-  const currentPenalty = edgeMaps[fromComponentId]!.get(toComponentId)
-  if (currentPenalty === undefined || penalty < currentPenalty) {
-    edgeMaps[fromComponentId]!.set(toComponentId, penalty)
-  }
+  edgesByComponent[fromComponentId]!.push({
+    componentId: toComponentId,
+    portId,
+    neighborRegionId,
+  })
 }
 
 const getComponentEdges = ({
@@ -156,47 +164,44 @@ const getComponentEdges = ({
   componentByRegion: Int32Array
   componentCount: number
 }): PortPenaltyEdge[][] => {
-  const edgeMaps = Array.from(
+  const edgesByComponent = Array.from(
     { length: componentCount },
-    () => new Map<number, number>(),
+    (): PortPenaltyEdge[] => [],
   )
 
   for (let portId = 0; portId < topology.portCount; portId++) {
     if (problem.portSectionMask[portId] === 0) continue
     const incidentRegions = topology.incidentPortRegion[portId]
-    const penalty = getPortPenalty(problem, portId)
 
     for (let leftIndex = 0; leftIndex < incidentRegions.length; leftIndex++) {
-      const leftComponentId = componentByRegion[incidentRegions[leftIndex]!]!
+      const leftRegionId = incidentRegions[leftIndex]!
+      const leftComponentId = componentByRegion[leftRegionId]!
       for (
         let rightIndex = leftIndex + 1;
         rightIndex < incidentRegions.length;
         rightIndex++
       ) {
-        const rightComponentId =
-          componentByRegion[incidentRegions[rightIndex]!]!
-        addMinimumPenaltyEdge({
-          edgeMaps,
+        const rightRegionId = incidentRegions[rightIndex]!
+        const rightComponentId = componentByRegion[rightRegionId]!
+        addPortPenaltyEdge({
+          edgesByComponent,
           fromComponentId: leftComponentId,
           toComponentId: rightComponentId,
-          penalty,
+          portId,
+          neighborRegionId: rightRegionId,
         })
-        addMinimumPenaltyEdge({
-          edgeMaps,
+        addPortPenaltyEdge({
+          edgesByComponent,
           fromComponentId: rightComponentId,
           toComponentId: leftComponentId,
-          penalty,
+          portId,
+          neighborRegionId: leftRegionId,
         })
       }
     }
   }
 
-  return edgeMaps.map((edgeMap) =>
-    Array.from(edgeMap, ([componentId, penalty]) => ({
-      componentId,
-      penalty,
-    })),
-  )
+  return edgesByComponent
 }
 
 /**
@@ -245,15 +250,40 @@ const isComponentBlocked = ({
   return componentNetId !== -1 && componentNetId !== routeNetId
 }
 
+const isPortBlocked = ({
+  portId,
+  routeNetId,
+  portAssignment,
+  portReservationNetId,
+}: {
+  portId: PortId
+  routeNetId: NetId
+  portAssignment: Int32Array
+  portReservationNetId: Int32Array
+}): boolean => {
+  const assignedNetId = portAssignment[portId] ?? -1
+  const reservedNetId = portReservationNetId[portId] ?? -1
+  return (
+    (assignedNetId !== -1 && assignedNetId !== routeNetId) ||
+    reservedNetId === -2 ||
+    (reservedNetId !== -1 && reservedNetId !== routeNetId)
+  )
+}
+
 /**
- * Computes the minimum remaining fallback-port cost from each component to the
- * goal. This is a lower bound because it ignores congestion and port ownership.
+ * Computes the minimum remaining fallback-port and congestion cost from each
+ * component to the goal. Zero-cost components ignore internal blockers and
+ * congestion, so the result remains a lower bound.
  */
 export const getMinimumPortPenaltyByRegion = ({
   graph,
   topology,
+  problem,
   routeNetId,
   goalPortId,
+  portAssignment,
+  portReservationNetId,
+  regionCongestionCost,
 }: MinimumPortPenaltyParams): MinimumPortPenaltyByRegion => {
   const costs = new Float64Array(graph.edgesByComponent.length).fill(
     Number.POSITIVE_INFINITY,
@@ -280,7 +310,20 @@ export const getMinimumPortPenaltyByRegion = ({
     if (candidate.cost !== costs[candidate.componentId]) continue
 
     for (const edge of graph.edgesByComponent[candidate.componentId]!) {
-      const nextCost = candidate.cost + edge.penalty
+      if (
+        isPortBlocked({
+          portId: edge.portId,
+          routeNetId,
+          portAssignment,
+          portReservationNetId,
+        })
+      ) {
+        continue
+      }
+      const nextCost =
+        candidate.cost +
+        getPortPenalty(problem, edge.portId) +
+        regionCongestionCost[edge.neighborRegionId]!
       if (
         isComponentBlocked({
           graph,
