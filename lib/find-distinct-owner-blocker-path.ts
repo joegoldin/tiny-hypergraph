@@ -281,10 +281,20 @@ export const findAdditiveOwnerBlockerPath = <
         )
       }
 
-      const owners = new Set(current.owners)
       const hopOwners = new Set(hop.owners ?? [])
-      for (const owner of hopOwners) owners.add(owner)
+      const blockerOccurrenceCount =
+        current.blockerOccurrenceCount + hopOwners.size
       const distance = current.distance + hop.distance
+      const stateKey = options.getStateKey(hop.state)
+      const bestLabel = bestLabelByStateKey.get(stateKey)
+      if (
+        bestLabel &&
+        (bestLabel.blockerOccurrenceCount < blockerOccurrenceCount ||
+          (bestLabel.blockerOccurrenceCount === blockerOccurrenceCount &&
+            bestLabel.distance <= distance))
+      ) {
+        continue
+      }
       const estimatedRemainingDistance =
         options.getEstimatedRemainingDistance?.(hop.state) ?? 0
       if (
@@ -296,6 +306,8 @@ export const findAdditiveOwnerBlockerPath = <
           "Additive-owner blocker path and estimate distances must remain finite and >= 0",
         )
       }
+      const owners = new Set(current.owners)
+      for (const owner of hopOwners) owners.add(owner)
       const candidate: AdditiveSearchLabel<
         TState,
         TStateKey,
@@ -303,20 +315,15 @@ export const findAdditiveOwnerBlockerPath = <
         THopData
       > = {
         state: hop.state,
-        stateKey: options.getStateKey(hop.state),
+        stateKey,
         owners,
-        blockerOccurrenceCount:
-          current.blockerOccurrenceCount + hopOwners.size,
+        blockerOccurrenceCount,
         estimatedTotalDistance: distance + estimatedRemainingDistance,
         distance,
         parent: current,
         incomingHop: hop,
         queueOrder: nextQueueOrder++,
         active: true,
-      }
-      const bestLabel = bestLabelByStateKey.get(candidate.stateKey)
-      if (bestLabel && compareAdditiveLabels(bestLabel, candidate) <= 0) {
-        continue
       }
       bestLabelByStateKey.set(candidate.stateKey, candidate)
       queue.queue(candidate)
