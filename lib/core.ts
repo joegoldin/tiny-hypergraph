@@ -582,20 +582,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
           this.problemSetup.portEndpointReservationNetId,
         regionCongestionCost: state.regionCongestionCost,
       })
-      if (problem.routeCount >= 800) {
-        console.error(
-          "[tiny-port-penalty-lower-bound]",
-          JSON.stringify({
-            routeId: state.currentRouteId,
-            connectionId:
-              problem.routeMetadata?.[state.currentRouteId!]?.connectionId,
-            startCost: getMinimumPortPenalty(
-              this.minimumPortPenaltyByRegion,
-              startingNextRegionId,
-            ),
-          }),
-        )
-      }
     }
 
     const currentCandidate = state.candidateQueue.dequeue()
