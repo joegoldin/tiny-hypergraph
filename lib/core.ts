@@ -1361,7 +1361,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
 
     state.ripCount += 1
-    this.removeRegionPathGuidanceForRoutes(range(problem.routeCount))
+    this.removeRegionPathGuidanceForRoutes(range(this.problem.routeCount))
     this.resetRoutingStateForRerip()
     this.stats = {
       ...this.stats,
@@ -1390,7 +1390,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
     }
 
     state.ripCount += 1
-    this.removeRegionPathGuidanceForRoutes(range(problem.routeCount))
+    this.removeRegionPathGuidanceForRoutes(range(this.problem.routeCount))
     this.resetRoutingStateForRerip()
     this.stats = {
       ...this.stats,
@@ -1435,7 +1435,9 @@ export class TinyHyperGraphSolver extends BaseSolver {
     if (!this.USE_REGION_PATH_GUIDANCE) return
 
     for (const routeId of routeIds) {
-      this.routesUsingGlobalSearch.add(routeId)
+      if (this.preferredRegionIdsByRoute[routeId]?.length) {
+        this.routesUsingGlobalSearch.add(routeId)
+      }
     }
     this.stats = {
       ...this.stats,
@@ -1469,17 +1471,19 @@ export class TinyHyperGraphSolver extends BaseSolver {
       regionPathPlanningIterations: regionPathSolver.iterations,
       regionPathPlanningSolved: regionPathSolver.solved,
     }
-    if (!regionPathSolver.solved || regionPathSolver.failed) return
 
     this.preferredRegionIdsByRoute =
       regionPathSolver.state.solvedRouteRegionIds.map((regionIds) => [
         ...regionIds,
       ])
+    const regionPathGuidedRouteCount =
+      this.preferredRegionIdsByRoute.filter(
+        (regionIds) => regionIds.length > 0,
+      ).length
     this.stats = {
       ...this.stats,
-      regionPathGuidedRouteCount: this.preferredRegionIdsByRoute.filter(
-        (regionIds) => regionIds.length > 0,
-      ).length,
+      regionPathGuidedRouteCount,
+      regionPathPlanningSolvedRouteCount: regionPathGuidedRouteCount,
     }
   }
 
