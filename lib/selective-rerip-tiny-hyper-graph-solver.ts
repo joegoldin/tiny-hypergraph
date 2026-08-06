@@ -126,6 +126,21 @@ export function selectOwnerRouteIdsToRip(params: {
   return rippedRouteIds
 }
 
+export function getRepeatedOwnerRouteIds(params: {
+  failedRouteId: RouteId
+  failedOwnerPairCounts: ReadonlyMap<
+    RouteId,
+    ReadonlyMap<RouteId, number>
+  >
+}): Set<RouteId> {
+  const repeatedOwnerRouteIds = new Set<RouteId>()
+  for (const [ownerRouteId, failureCount] of
+    params.failedOwnerPairCounts.get(params.failedRouteId) ?? []) {
+    if (failureCount >= 2) repeatedOwnerRouteIds.add(ownerRouteId)
+  }
+  return repeatedOwnerRouteIds
+}
+
 export function orderRoutesAfterSelectiveRerip(params: {
   failedRouteId: RouteId
   pendingRouteIds: readonly RouteId[]
@@ -214,11 +229,15 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     }
 
     const directOwnerRouteIds = [...directPath.owners]
-    const repeatedOwnerRouteIds: RouteId[] = []
     for (const ownerRouteId of directOwnerRouteIds) {
-      const count = this.incrementFailedOwnerPair(failedRouteId, ownerRouteId)
-      if (count >= 2) repeatedOwnerRouteIds.push(ownerRouteId)
+      this.incrementFailedOwnerPair(failedRouteId, ownerRouteId)
     }
+    const repeatedOwnerRouteIds = [
+      ...getRepeatedOwnerRouteIds({
+        failedRouteId,
+        failedOwnerPairCounts: this.failedOwnerPairCounts,
+      }),
+    ]
 
     let alternatePath:
       | DistinctOwnerBlockerSearchResult<
@@ -229,15 +248,17 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       | undefined
     if (repeatedOwnerRouteIds.length > 0) {
       this.selectiveReripStats.alternateBlockerSearchCount += 1
-      // Avoid a repeated blocker when possible. If every path uses it, the
-      // direct path remains valid and is safer than discarding every route.
+      // Avoid every blocker this route has repeatedly encountered, rather
+      // than cycling back to a blocker learned on an earlier attempt.
       alternatePath = this.findRelaxedBlockerPath(
         new Set(repeatedOwnerRouteIds),
       )
     }
 
-    const alternateOwnerRouteIds = alternatePath?.found
-      ? [...alternatePath.owners]
+    const alternateOwnerRouteIds = alternatePath
+      ? alternatePath.found
+        ? [...alternatePath.owners]
+        : repeatedOwnerRouteIds
       : undefined
     const rippedRouteIds = selectOwnerRouteIdsToRip({
       failedRouteId,

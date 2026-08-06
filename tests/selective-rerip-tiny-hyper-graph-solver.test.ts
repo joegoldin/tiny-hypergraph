@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import {
+  getRepeatedOwnerRouteIds,
   orderRoutesAfterSelectiveRerip,
   selectOwnerRouteIdsToRip,
 } from "lib/selective-rerip-tiny-hyper-graph-solver"
@@ -38,4 +39,18 @@ test("keeps pending routes ahead of newly ripped routes", () => {
       rippedRouteIds: new Set([4, 2, 7]),
     }),
   ).toEqual([7, 3, 8, 9, 4, 2])
+})
+
+test("remembers every repeated blocker for the failed route", () => {
+  const failedOwnerPairCounts = new Map([
+    [1, new Map([[2, 2], [3, 1], [4, 3]])],
+    [5, new Map([[6, 4]])],
+  ])
+
+  expect([
+    ...getRepeatedOwnerRouteIds({
+      failedRouteId: 1,
+      failedOwnerPairCounts,
+    }),
+  ]).toEqual([2, 4])
 })
