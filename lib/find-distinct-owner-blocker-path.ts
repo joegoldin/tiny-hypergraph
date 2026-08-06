@@ -1,3 +1,5 @@
+import { MinHeap } from "./MinHeap"
+
 export type DistinctOwnerBlockerHop<TState, TOwner, THopData = unknown> = {
   state: TState
   distance: number
@@ -56,6 +58,15 @@ type SearchLabel<TState, TStateKey, TOwner, THopData> = {
   incomingHop: DistinctOwnerBlockerHop<TState, TOwner, THopData> | null
   queueOrder: number
   active: boolean
+}
+
+type AdditiveSearchLabel<TState, TStateKey, TOwner, THopData> = SearchLabel<
+  TState,
+  TStateKey,
+  TOwner,
+  THopData
+> & {
+  blockerOccurrenceCount: number
 }
 
 const compareLabels = <TState, TStateKey, TOwner, THopData>(
@@ -172,6 +183,111 @@ const reconstructSuccessfulSearch = <TState, TStateKey, TOwner, THopData>(
     distance: goal.distance,
     expandedLabelCount,
   }
+}
+
+const compareAdditiveLabels = <TState, TStateKey, TOwner, THopData>(
+  left: AdditiveSearchLabel<TState, TStateKey, TOwner, THopData>,
+  right: AdditiveSearchLabel<TState, TStateKey, TOwner, THopData>,
+): number =>
+  left.blockerOccurrenceCount - right.blockerOccurrenceCount ||
+  left.distance - right.distance ||
+  left.queueOrder - right.queueOrder
+
+/**
+ * Finds a blocker path in polynomial time by counting blockers per hop. Unlike
+ * the exact distinct-owner search, this keeps one best label per topology
+ * state, so it is suitable as a guaranteed fallback on large graphs.
+ */
+export const findAdditiveOwnerBlockerPath = <
+  TState,
+  TStateKey,
+  TOwner,
+  THopData = unknown,
+>(
+  options: DistinctOwnerBlockerSearchOptions<
+    TState,
+    TStateKey,
+    TOwner,
+    THopData
+  >,
+): DistinctOwnerBlockerSearchResult<TState, TOwner, THopData> => {
+  const queue = new MinHeap<
+    AdditiveSearchLabel<TState, TStateKey, TOwner, THopData>
+  >([], compareAdditiveLabels)
+  const bestLabelByStateKey = new Map<
+    TStateKey,
+    AdditiveSearchLabel<TState, TStateKey, TOwner, THopData>
+  >()
+  let nextQueueOrder = 0
+  let expandedLabelCount = 0
+  const startLabel: AdditiveSearchLabel<
+    TState,
+    TStateKey,
+    TOwner,
+    THopData
+  > = {
+    state: options.start,
+    stateKey: options.getStateKey(options.start),
+    owners: new Set<TOwner>(),
+    blockerOccurrenceCount: 0,
+    distance: 0,
+    parent: null,
+    incomingHop: null,
+    queueOrder: nextQueueOrder++,
+    active: true,
+  }
+  bestLabelByStateKey.set(startLabel.stateKey, startLabel)
+  queue.queue(startLabel)
+
+  while (queue.length > 0) {
+    const current = queue.dequeue()!
+    if (bestLabelByStateKey.get(current.stateKey) !== current) continue
+    if (options.isGoal(current.state)) {
+      return reconstructSuccessfulSearch(current, expandedLabelCount)
+    }
+    expandedLabelCount++
+
+    for (const hop of options.getHops(current.state)) {
+      if (!Number.isFinite(hop.distance) || hop.distance < 0) {
+        throw new Error(
+          "Additive-owner blocker hops require finite distances >= 0",
+        )
+      }
+
+      const owners = new Set(current.owners)
+      const hopOwners = new Set(hop.owners ?? [])
+      for (const owner of hopOwners) owners.add(owner)
+      const candidate: AdditiveSearchLabel<
+        TState,
+        TStateKey,
+        TOwner,
+        THopData
+      > = {
+        state: hop.state,
+        stateKey: options.getStateKey(hop.state),
+        owners,
+        blockerOccurrenceCount:
+          current.blockerOccurrenceCount + hopOwners.size,
+        distance: current.distance + hop.distance,
+        parent: current,
+        incomingHop: hop,
+        queueOrder: nextQueueOrder++,
+        active: true,
+      }
+      if (!Number.isFinite(candidate.distance)) {
+        throw new Error("Additive-owner blocker path distance overflowed")
+      }
+
+      const bestLabel = bestLabelByStateKey.get(candidate.stateKey)
+      if (bestLabel && compareAdditiveLabels(bestLabel, candidate) <= 0) {
+        continue
+      }
+      bestLabelByStateKey.set(candidate.stateKey, candidate)
+      queue.queue(candidate)
+    }
+  }
+
+  return { found: false, reason: "no_path", expandedLabelCount }
 }
 
 const getNextActiveLabel = <TState, TStateKey, TOwner, THopData>(
