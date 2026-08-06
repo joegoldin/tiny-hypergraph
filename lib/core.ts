@@ -374,6 +374,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
   private staticallyUnroutableRoutes: StaticallyUnroutableRouteSummary[] = []
   private readonly layerCount: number
   private layeredRegionHopDistances: Int32Array
+  private currentRouteStartIteration = 0
   private segmentGeometryScratch: SegmentGeometryScratch = {
     lesserAngle: 0,
     greaterAngle: 0,
@@ -551,6 +552,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       state.currentRouteId = state.unroutedRoutes.shift()
       state.currentRouteNetId = problem.routeNet[state.currentRouteId!]
       this.routeAttemptCountByRouteId[state.currentRouteId!] += 1
+      this.currentRouteStartIteration = this.iterations
 
       this.resetCandidateBestCosts()
       const startingPortId = problem.routeStartPort[state.currentRouteId!]
@@ -1415,6 +1417,30 @@ export class TinyHyperGraphSolver extends BaseSolver {
     this.routeSuccessCountByRouteId[currentRouteId] += 1
 
     const solvedSegments = this.getSolvedPathSegments(finalCandidate)
+    const routeSearchIterations =
+      this.iterations - this.currentRouteStartIteration
+
+    if (this.problem.routeCount >= 800 && routeSearchIterations >= 25_000) {
+      console.error(
+        "[tiny-expensive-path]",
+        JSON.stringify({
+          routeId: currentRouteId,
+          connectionId:
+            this.problem.routeMetadata?.[currentRouteId]?.connectionId,
+          routeSearchIterations,
+          finalG: finalCandidate.g,
+          candidateQueueLength: state.candidateQueue.length,
+          regions: solvedSegments.map(({ regionId, fromPortId, toPortId }) => ({
+            regionId,
+            portCount: this.topology.regionIncidentPorts[regionId]?.length ?? 0,
+            width: this.topology.regionWidth[regionId],
+            height: this.topology.regionHeight[regionId],
+            fromZ: this.topology.portZ[fromPortId],
+            toZ: this.topology.portZ[toPortId],
+          })),
+        }),
+      )
+    }
 
     for (const { regionId, fromPortId, toPortId } of solvedSegments) {
       state.regionSegments[regionId].push([
