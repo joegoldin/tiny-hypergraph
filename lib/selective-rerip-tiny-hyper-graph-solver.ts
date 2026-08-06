@@ -262,7 +262,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
     const alternateOwnerRouteIds = alternatePath
       ? alternatePath.found
-        ? [...alternatePath.owners]
+        ? [...new Set([...repeatedOwnerRouteIds, ...alternatePath.owners])]
         : repeatedOwnerRouteIds
       : undefined
     const rippedRouteIds = selectOwnerRouteIdsToRip({
