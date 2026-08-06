@@ -238,9 +238,17 @@ export const findDistinctOwnerBlockerPath = <
       return reconstructSuccessfulSearch(current, expandedLabelCount)
     }
     if (expandedLabelCount >= maxExpandedLabels) {
-      const discoveredGoal = discoveredGoalLabels
-        .filter((label) => label.active)
-        .sort(compareLabels)[0]
+      let discoveredGoal:
+        | SearchLabel<TState, TStateKey, TOwner, THopData>
+        | undefined
+      for (const label of discoveredGoalLabels) {
+        if (
+          label.active &&
+          (!discoveredGoal || compareLabels(label, discoveredGoal) < 0)
+        ) {
+          discoveredGoal = label
+        }
+      }
       if (discoveredGoal) {
         return reconstructSuccessfulSearch(discoveredGoal, expandedLabelCount)
       }
