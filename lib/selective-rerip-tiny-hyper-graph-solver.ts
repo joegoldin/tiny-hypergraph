@@ -187,6 +187,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
   }
 
   override onOutOfCandidates(): void {
+    if (this.retryCurrentRouteWithGlobalSearch()) return
+
     const failedRouteId = this.state.currentRouteId
     if (failedRouteId === undefined) {
       throw new Error(

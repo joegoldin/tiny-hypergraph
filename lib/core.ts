@@ -16,6 +16,7 @@ import {
   getMinimumPortPenaltyByRegion,
 } from "./minimum-port-penalty-by-region"
 import { MinHeap } from "./MinHeap"
+import { RegionPathSolver } from "./region-graph/region-path-solver"
 import { shuffle } from "./shuffle"
 import type { StaticallyUnroutableRouteSummary } from "./static-reachability"
 import {
@@ -251,6 +252,7 @@ export interface TinyHyperGraphSolverOptions {
   RIP_THRESHOLD_RAMP_ATTEMPTS?: number
   RIP_CONGESTION_REGION_COST_FACTOR?: number
   USE_LAZY_ROUTE_HEURISTIC?: boolean
+  USE_REGION_PATH_GUIDANCE?: boolean
   USE_SPARSE_CANDIDATE_STORAGE?: boolean
   MAX_ITERATIONS?: number
   VERBOSE?: boolean
@@ -268,6 +270,7 @@ export interface TinyHyperGraphSolverOptionTarget {
   RIP_THRESHOLD_RAMP_ATTEMPTS: number
   RIP_CONGESTION_REGION_COST_FACTOR: number
   USE_LAZY_ROUTE_HEURISTIC?: boolean
+  USE_REGION_PATH_GUIDANCE?: boolean
   USE_SPARSE_CANDIDATE_STORAGE?: boolean
   MAX_ITERATIONS: number
   VERBOSE: boolean
@@ -307,6 +310,9 @@ export const applyTinyHyperGraphSolverOptions = (
   if (options.USE_LAZY_ROUTE_HEURISTIC !== undefined) {
     solver.USE_LAZY_ROUTE_HEURISTIC = options.USE_LAZY_ROUTE_HEURISTIC
   }
+  if (options.USE_REGION_PATH_GUIDANCE !== undefined) {
+    solver.USE_REGION_PATH_GUIDANCE = options.USE_REGION_PATH_GUIDANCE
+  }
   if (options.USE_SPARSE_CANDIDATE_STORAGE !== undefined) {
     solver.USE_SPARSE_CANDIDATE_STORAGE = options.USE_SPARSE_CANDIDATE_STORAGE
   }
@@ -342,6 +348,7 @@ export const getTinyHyperGraphSolverOptions = (
   RIP_THRESHOLD_RAMP_ATTEMPTS: solver.RIP_THRESHOLD_RAMP_ATTEMPTS,
   RIP_CONGESTION_REGION_COST_FACTOR: solver.RIP_CONGESTION_REGION_COST_FACTOR,
   USE_LAZY_ROUTE_HEURISTIC: solver.USE_LAZY_ROUTE_HEURISTIC,
+  USE_REGION_PATH_GUIDANCE: solver.USE_REGION_PATH_GUIDANCE,
   USE_SPARSE_CANDIDATE_STORAGE: solver.USE_SPARSE_CANDIDATE_STORAGE,
   MAX_ITERATIONS: solver.MAX_ITERATIONS,
   VERBOSE: solver.VERBOSE,
@@ -372,6 +379,8 @@ export class TinyHyperGraphSolver extends BaseSolver {
   private hasLoggedNeverSuccessfullyRoutedRoutes = false
   private staticallyUnroutableRoutes: StaticallyUnroutableRouteSummary[] = []
   private minimumPortPenaltyByRegion: Float64Array
+  private preferredRegionIdsByRoute: Array<readonly RegionId[]> = []
+  private routesUsingGlobalSearch = new Set<RouteId>()
   private segmentGeometryScratch: SegmentGeometryScratch = {
     lesserAngle: 0,
     greaterAngle: 0,
@@ -388,6 +397,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
   RIP_CONGESTION_REGION_COST_FACTOR = 0.1
   USE_LAZY_ROUTE_HEURISTIC = false
+  USE_REGION_PATH_GUIDANCE = false
   USE_SPARSE_CANDIDATE_STORAGE = false
 
   override MAX_ITERATIONS = 1e6
@@ -443,6 +453,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
         ...initialAssignmentStats,
       }
     }
+    this.computePreferredRegionPaths()
   }
 
   get problemSetup(): TinyHyperGraphProblemSetup {
@@ -609,6 +620,14 @@ export class TinyHyperGraphSolver extends BaseSolver {
     for (const neighborPortId of neighbors) {
       const assignedNetId = state.portAssignment[neighborPortId]
       if (this.isPortReservedForDifferentNet(neighborPortId)) continue
+      if (
+        !this.isPortAllowedByPreferredRegionPath(
+          currentCandidate.nextRegionId,
+          neighborPortId,
+        )
+      ) {
+        continue
+      }
       if (neighborPortId === state.goalPortId) {
         if (assignedNetId !== -1 && assignedNetId !== state.currentRouteNetId) {
           continue
@@ -1356,6 +1375,8 @@ export class TinyHyperGraphSolver extends BaseSolver {
   }
 
   onOutOfCandidates() {
+    if (this.retryCurrentRouteWithGlobalSearch()) return
+
     const { topology, state } = this
     const currentRouteId = state.currentRouteId
     const maxRegionCostBeforeRip = this.getMaxRegionCost()
@@ -1384,6 +1405,73 @@ export class TinyHyperGraphSolver extends BaseSolver {
             connectionId: this.getRouteConnectionId(currentRouteId),
           }),
     })
+  }
+
+  protected retryCurrentRouteWithGlobalSearch(): boolean {
+    const routeId = this.state.currentRouteId
+    if (
+      routeId === undefined ||
+      this.routesUsingGlobalSearch.has(routeId) ||
+      !this.preferredRegionIdsByRoute[routeId]?.length
+    ) {
+      return false
+    }
+
+    this.routesUsingGlobalSearch.add(routeId)
+    this.state.unroutedRoutes.unshift(routeId)
+    this.state.currentRouteId = undefined
+    this.state.currentRouteNetId = undefined
+    this.state.candidateQueue.clear()
+    this.resetCandidateBestCosts()
+    this.state.goalPortId = -1
+    this.stats = {
+      ...this.stats,
+      regionPathFallbackRouteCount: this.routesUsingGlobalSearch.size,
+    }
+    return true
+  }
+
+  private computePreferredRegionPaths(): void {
+    if (!this.USE_REGION_PATH_GUIDANCE) return
+
+    const regionPathSolver = new RegionPathSolver(this.topology, this.problem)
+    regionPathSolver.solve()
+    if (!regionPathSolver.solved || regionPathSolver.failed) return
+
+    this.preferredRegionIdsByRoute =
+      regionPathSolver.state.solvedRouteRegionIds.map((regionIds) => [
+        ...regionIds,
+      ])
+    this.stats = {
+      ...this.stats,
+      regionPathGuidedRouteCount: this.preferredRegionIdsByRoute.filter(
+        (regionIds) => regionIds.length > 0,
+      ).length,
+    }
+  }
+
+  private isPortAllowedByPreferredRegionPath(
+    currentRegionId: RegionId,
+    portId: PortId,
+  ): boolean {
+    const routeId = this.state.currentRouteId
+    if (routeId === undefined || this.routesUsingGlobalSearch.has(routeId)) {
+      return true
+    }
+
+    const preferredRegionIds = this.preferredRegionIdsByRoute[routeId]
+    if (!preferredRegionIds?.length) return true
+    const currentRegionIndex = preferredRegionIds.indexOf(currentRegionId)
+    if (currentRegionIndex < 0) return true
+    if (portId === this.state.goalPortId) {
+      return currentRegionIndex === preferredRegionIds.length - 1
+    }
+
+    const incidentRegionIds = this.topology.incidentPortRegion[portId] ?? []
+    const nextRegionId = incidentRegionIds.find(
+      (regionId) => regionId !== currentRegionId,
+    )
+    return nextRegionId === preferredRegionIds[currentRegionIndex + 1]
   }
 
   onPathFound(finalCandidate: Candidate) {
