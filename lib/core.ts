@@ -358,7 +358,7 @@ interface SegmentGeometryScratch {
   entryExitLayerChanges: number
 }
 
-const REGION_HOP_TO_COST = 0.1
+const REGION_HOP_TO_COST = 1
 
 const createNeighboringRegionIds = (
   topology: TinyHyperGraphTopology,
