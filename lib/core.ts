@@ -585,6 +585,24 @@ export class TinyHyperGraphSolver extends BaseSolver {
         goalPortId: state.goalPortId,
         layerCount: this.layerCount,
       })
+      if (problem.routeCount >= 800) {
+        console.error(
+          "[tiny-layered-route]",
+          JSON.stringify({
+            routeId: state.currentRouteId,
+            connectionId:
+              problem.routeMetadata?.[state.currentRouteId!]?.connectionId,
+            startZ: topology.portZ[startingPortId],
+            endZ: topology.portZ[state.goalPortId],
+            startHopDistance: getLayeredRegionHopDistance({
+              distances: this.layeredRegionHopDistances,
+              regionId: startingNextRegionId,
+              z: topology.portZ[startingPortId]!,
+              layerCount: this.layerCount,
+            }),
+          }),
+        )
+      }
     }
 
     const currentCandidate = state.candidateQueue.dequeue()
@@ -1532,12 +1550,15 @@ export class TinyHyperGraphSolver extends BaseSolver {
     const layeredRegionHopCost =
       nextRegionId === undefined
         ? 0
-        : getLayeredRegionHopDistance({
-            distances: this.layeredRegionHopDistances,
-            regionId: nextRegionId,
-            z: this.topology.portZ[neighborPortId]!,
-            layerCount: this.layerCount,
-          }) * LAYERED_REGION_HOP_TO_COST
+        : Math.max(
+            0,
+            getLayeredRegionHopDistance({
+              distances: this.layeredRegionHopDistances,
+              regionId: nextRegionId,
+              z: this.topology.portZ[neighborPortId]!,
+              layerCount: this.layerCount,
+            }),
+          ) * LAYERED_REGION_HOP_TO_COST
     if (precomputedHCost) {
       return (
         precomputedHCost[

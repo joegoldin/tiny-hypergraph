@@ -139,7 +139,4 @@ export const getLayeredRegionHopDistance = ({
   z: number
   layerCount: number
 }): number =>
-  Math.max(
-    0,
-    distances[getLayeredRegionStateId({ regionId, z, layerCount })] ?? -1,
-  )
+  distances[getLayeredRegionStateId({ regionId, z, layerCount })] ?? -1
