@@ -339,11 +339,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     for (const incidentRegions of this.topology.incidentPortRegion) {
       incidentHopCount += incidentRegions.length
     }
-    const ownerScale = Math.max(
-      4,
-      Math.ceil(Math.log2(this.problem.routeCount + 1)),
-    )
-    return Math.max(4096, incidentHopCount * ownerScale * 4)
+    return Math.max(4096, incidentHopCount)
   }
 
   private getRelaxedSearchHops(params: {
