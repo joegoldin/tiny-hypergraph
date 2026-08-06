@@ -11,6 +11,10 @@ import {
   applyInitialAssignments,
   type TinyHyperGraphInitialAssignment,
 } from "./initialAssignments"
+import {
+  getLayeredRegionHopDistance,
+  getLayeredRegionHopDistances,
+} from "./layered-region-hop-distances"
 import { MinHeap } from "./MinHeap"
 import { shuffle } from "./shuffle"
 import type { StaticallyUnroutableRouteSummary } from "./static-reachability"
@@ -34,6 +38,7 @@ export type { StaticallyUnroutableRouteSummary } from "./static-reachability"
 export type { TinyHyperGraphInitialAssignment } from "./initialAssignments"
 
 const GREEDY_FINAL_ROUTE_MAX_ITERATIONS = 50e3
+const LAYERED_REGION_HOP_TO_COST = 0.1
 
 export const createEmptyRegionIntersectionCache =
   (): RegionIntersectionCache => ({
@@ -367,6 +372,8 @@ export class TinyHyperGraphSolver extends BaseSolver {
   protected bestSolvedStateSummary?: RegionCostSummary
   private hasLoggedNeverSuccessfullyRoutedRoutes = false
   private staticallyUnroutableRoutes: StaticallyUnroutableRouteSummary[] = []
+  private readonly layerCount: number
+  private layeredRegionHopDistances: Int32Array
   private segmentGeometryScratch: SegmentGeometryScratch = {
     lesserAngle: 0,
     greaterAngle: 0,
@@ -399,6 +406,11 @@ export class TinyHyperGraphSolver extends BaseSolver {
   ) {
     super()
     applyTinyHyperGraphSolverOptions(this, options)
+    this.layerCount =
+      topology.portZ.reduce((maxZ, z) => Math.max(maxZ, z), -1) + 1
+    this.layeredRegionHopDistances = new Int32Array(
+      topology.regionCount * this.layerCount,
+    ).fill(-1)
     this.state = {
       portAssignment: new Int32Array(topology.portCount).fill(-1),
       regionSegments: Array.from({ length: topology.regionCount }, () => []),
@@ -566,6 +578,19 @@ export class TinyHyperGraphSolver extends BaseSolver {
         h: 0,
       })
       state.goalPortId = problem.routeEndPort[state.currentRouteId!]
+      if (
+        topology.portZ[startingPortId] !== topology.portZ[state.goalPortId]
+      ) {
+        this.layeredRegionHopDistances = getLayeredRegionHopDistances({
+          topology,
+          problem,
+          routeNetId: state.currentRouteNetId!,
+          goalPortId: state.goalPortId,
+          layerCount: this.layerCount,
+        })
+      } else {
+        this.layeredRegionHopDistances.fill(-1)
+      }
     }
 
     const currentCandidate = state.candidateQueue.dequeue()
@@ -606,10 +631,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
       if (neighborPortId === currentCandidate.portId) continue
       if (problem.portSectionMask[neighborPortId] === 0) continue
 
-      const g = this.computeG(currentCandidate, neighborPortId)
-      if (!Number.isFinite(g)) continue
-      const h = this.computeH(neighborPortId)
-
       const nextRegionId =
         topology.incidentPortRegion[neighborPortId][0] ===
         currentCandidate.nextRegionId
@@ -622,6 +643,10 @@ export class TinyHyperGraphSolver extends BaseSolver {
       ) {
         continue
       }
+
+      const g = this.computeG(currentCandidate, neighborPortId)
+      if (!Number.isFinite(g)) continue
+      const h = this.computeH(neighborPortId, nextRegionId)
 
       const newCandidate = {
         prevRegionId: currentCandidate.nextRegionId,
@@ -1508,12 +1533,23 @@ export class TinyHyperGraphSolver extends BaseSolver {
     this.logNeverSuccessfullyRoutedRoutes()
   }
 
-  computeH(neighborPortId: PortId): number {
+  computeH(neighborPortId: PortId, nextRegionId?: RegionId): number {
     const precomputedHCost = this.problemSetup.portHCostToEndOfRoute
+    const layeredRegionHopCost =
+      nextRegionId === undefined
+        ? 0
+        : getLayeredRegionHopDistance({
+            distances: this.layeredRegionHopDistances,
+            regionId: nextRegionId,
+            z: this.topology.portZ[neighborPortId]!,
+            layerCount: this.layerCount,
+          }) * LAYERED_REGION_HOP_TO_COST
     if (precomputedHCost) {
-      return precomputedHCost[
-        neighborPortId * this.problem.routeCount + this.state.currentRouteId!
-      ]
+      return (
+        precomputedHCost[
+          neighborPortId * this.problem.routeCount + this.state.currentRouteId!
+        ] + layeredRegionHopCost
+      )
     }
 
     const endPortId = this.problem.routeEndPort[this.state.currentRouteId!]
@@ -1521,7 +1557,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       this.topology.portX[neighborPortId] - this.topology.portX[endPortId]
     const dy =
       this.topology.portY[neighborPortId] - this.topology.portY[endPortId]
-    return Math.hypot(dx, dy) * this.DISTANCE_TO_COST
+    return Math.hypot(dx, dy) * this.DISTANCE_TO_COST + layeredRegionHopCost
   }
 
   override visualize(): GraphicsObject {
