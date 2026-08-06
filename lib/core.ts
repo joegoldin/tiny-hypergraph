@@ -358,8 +358,41 @@ interface SegmentGeometryScratch {
   entryExitLayerChanges: number
 }
 
+type RegionIncidentPortFamilies = PortId[][][]
+
+const createRegionIncidentPortFamilies = (
+  topology: TinyHyperGraphTopology,
+): RegionIncidentPortFamilies =>
+  topology.regionIncidentPorts.map((portIds, regionId) => {
+    const portFamiliesByNeighborRegion = new Map<
+      RegionId,
+      Map<number, PortId[]>
+    >()
+
+    for (const portId of portIds) {
+      const [firstRegionId, secondRegionId] =
+        topology.incidentPortRegion[portId] ?? []
+      const neighborRegionId =
+        firstRegionId === regionId ? secondRegionId : firstRegionId
+      if (neighborRegionId === undefined) continue
+
+      const portFamiliesByZ =
+        portFamiliesByNeighborRegion.get(neighborRegionId) ?? new Map()
+      const portZ = topology.portZ[portId]!
+      const portFamily = portFamiliesByZ.get(portZ) ?? []
+      portFamily.push(portId)
+      portFamiliesByZ.set(portZ, portFamily)
+      portFamiliesByNeighborRegion.set(neighborRegionId, portFamiliesByZ)
+    }
+
+    return [...portFamiliesByNeighborRegion.values()].flatMap(
+      (portFamiliesByZ) => [...portFamiliesByZ.values()],
+    )
+  })
+
 export class TinyHyperGraphSolver extends BaseSolver {
   state: TinyHyperGraphWorkingState
+  private readonly regionIncidentPortFamilies: RegionIncidentPortFamilies
   private _problemSetup?: TinyHyperGraphProblemSetup
   protected routeAttemptCountByRouteId: Uint32Array
   protected routeSuccessCountByRouteId: Uint32Array
@@ -399,6 +432,8 @@ export class TinyHyperGraphSolver extends BaseSolver {
   ) {
     super()
     applyTinyHyperGraphSolverOptions(this, options)
+    this.regionIncidentPortFamilies =
+      createRegionIncidentPortFamilies(topology)
     this.state = {
       portAssignment: new Int32Array(topology.portCount).fill(-1),
       regionSegments: Array.from({ length: topology.regionCount }, () => []),
@@ -587,62 +622,75 @@ export class TinyHyperGraphSolver extends BaseSolver {
       return
     }
 
-    const neighbors =
-      topology.regionIncidentPorts[currentCandidate.nextRegionId]
+    const portFamilies =
+      this.regionIncidentPortFamilies[currentCandidate.nextRegionId] ?? []
 
-    for (const neighborPortId of neighbors) {
-      const assignedNetId = state.portAssignment[neighborPortId]
-      if (this.isPortReservedForDifferentNet(neighborPortId)) continue
-      if (neighborPortId === state.goalPortId) {
+    for (const portFamily of portFamilies) {
+      let bestFamilyCandidate: Candidate | undefined
+
+      for (const neighborPortId of portFamily) {
+        const assignedNetId = state.portAssignment[neighborPortId]
+        if (this.isPortReservedForDifferentNet(neighborPortId)) continue
+        if (neighborPortId === state.goalPortId) {
+          if (
+            assignedNetId !== -1 &&
+            assignedNetId !== state.currentRouteNetId
+          ) {
+            continue
+          }
+          this.onPathFound(currentCandidate)
+          return
+        }
         if (assignedNetId !== -1 && assignedNetId !== state.currentRouteNetId) {
           continue
         }
-        this.onPathFound(currentCandidate)
-        return
+        if (neighborPortId === currentCandidate.portId) continue
+        if (problem.portSectionMask[neighborPortId] === 0) continue
+
+        const nextRegionId =
+          topology.incidentPortRegion[neighborPortId][0] ===
+          currentCandidate.nextRegionId
+            ? topology.incidentPortRegion[neighborPortId][1]
+            : topology.incidentPortRegion[neighborPortId][0]
+
+        if (
+          nextRegionId === undefined ||
+          this.isRegionReservedForDifferentNet(nextRegionId)
+        ) {
+          continue
+        }
+
+        const g = this.computeG(currentCandidate, neighborPortId)
+        if (!Number.isFinite(g)) continue
+        const h = this.computeH(neighborPortId)
+        const candidateHopId = this.getHopId(neighborPortId, nextRegionId)
+        if (g >= this.getCandidateBestCost(candidateHopId)) continue
+
+        const newCandidate: Candidate = {
+          prevRegionId: currentCandidate.nextRegionId,
+          nextRegionId,
+          portId: neighborPortId,
+          g,
+          h,
+          f: g + h,
+          prevCandidate: currentCandidate,
+        }
+
+        if (
+          !bestFamilyCandidate ||
+          newCandidate.f < bestFamilyCandidate.f
+        ) {
+          bestFamilyCandidate = newCandidate
+        }
       }
-      if (assignedNetId !== -1 && assignedNetId !== state.currentRouteNetId) {
-        continue
-      }
-      if (neighborPortId === currentCandidate.portId) continue
-      if (problem.portSectionMask[neighborPortId] === 0) continue
 
-      const g = this.computeG(currentCandidate, neighborPortId)
-      if (!Number.isFinite(g)) continue
-      const h = this.computeH(neighborPortId)
-
-      const nextRegionId =
-        topology.incidentPortRegion[neighborPortId][0] ===
-        currentCandidate.nextRegionId
-          ? topology.incidentPortRegion[neighborPortId][1]
-          : topology.incidentPortRegion[neighborPortId][0]
-
-      if (
-        nextRegionId === undefined ||
-        this.isRegionReservedForDifferentNet(nextRegionId)
-      ) {
-        continue
-      }
-
-      const newCandidate = {
-        prevRegionId: currentCandidate.nextRegionId,
-        nextRegionId,
-        portId: neighborPortId,
-        g,
-        h,
-        f: g + h,
-        prevCandidate: currentCandidate,
-      }
-
-      if (neighborPortId === state.goalPortId) {
-        this.onPathFound(newCandidate)
-        return
-      }
-
-      const candidateHopId = this.getHopId(neighborPortId, nextRegionId)
-      if (g >= this.getCandidateBestCost(candidateHopId)) continue
-
-      this.setCandidateBestCost(candidateHopId, g)
-      state.candidateQueue.queue(newCandidate)
+      if (!bestFamilyCandidate) continue
+      const candidateHopId = this.getHopId(
+        bestFamilyCandidate.portId,
+        bestFamilyCandidate.nextRegionId,
+      )
+      this.setCandidateBestCost(candidateHopId, bestFamilyCandidate.g)
+      state.candidateQueue.queue(bestFamilyCandidate)
     }
   }
 
