@@ -14,6 +14,9 @@ import {
 import {
   getMinimumPortPenalty,
   getMinimumPortPenaltyByRegion,
+  getPortPenaltyComponentGraph,
+  type MinimumPortPenaltyByRegion,
+  type PortPenaltyComponentGraph,
 } from "./minimum-port-penalty-by-region"
 import { MinHeap } from "./MinHeap"
 import { shuffle } from "./shuffle"
@@ -371,7 +374,11 @@ export class TinyHyperGraphSolver extends BaseSolver {
   protected bestSolvedStateSummary?: RegionCostSummary
   private hasLoggedNeverSuccessfullyRoutedRoutes = false
   private staticallyUnroutableRoutes: StaticallyUnroutableRouteSummary[] = []
-  private minimumPortPenaltyByRegion: Float64Array
+  private minimumPortPenaltyByRegion: MinimumPortPenaltyByRegion
+  private readonly portPenaltyComponentGraph: PortPenaltyComponentGraph
+  private readonly minimumPortPenaltyByRoute: Array<
+    MinimumPortPenaltyByRegion | undefined
+  >
   private segmentGeometryScratch: SegmentGeometryScratch = {
     lesserAngle: 0,
     greaterAngle: 0,
@@ -404,7 +411,20 @@ export class TinyHyperGraphSolver extends BaseSolver {
   ) {
     super()
     applyTinyHyperGraphSolverOptions(this, options)
-    this.minimumPortPenaltyByRegion = new Float64Array(topology.regionCount)
+    this.portPenaltyComponentGraph = getPortPenaltyComponentGraph({
+      topology,
+      problem,
+    })
+    this.minimumPortPenaltyByRegion = {
+      componentByRegion: this.portPenaltyComponentGraph.componentByRegion,
+      costByComponent: new Float64Array(
+        this.portPenaltyComponentGraph.edgesByComponent.length,
+      ),
+    }
+    this.minimumPortPenaltyByRoute = Array.from(
+      { length: problem.routeCount },
+      () => undefined,
+    )
     this.state = {
       portAssignment: new Int32Array(topology.portCount).fill(-1),
       regionSegments: Array.from({ length: topology.regionCount }, () => []),
@@ -572,12 +592,8 @@ export class TinyHyperGraphSolver extends BaseSolver {
         h: 0,
       })
       state.goalPortId = problem.routeEndPort[state.currentRouteId!]
-      this.minimumPortPenaltyByRegion = getMinimumPortPenaltyByRegion({
-        topology,
-        problem,
-        routeNetId: state.currentRouteNetId!,
-        goalPortId: state.goalPortId,
-      })
+      this.minimumPortPenaltyByRegion =
+        this.getMinimumPortPenaltyByRegionForRoute(state.currentRouteId!)
     }
 
     const currentCandidate = state.candidateQueue.dequeue()
@@ -740,6 +756,22 @@ export class TinyHyperGraphSolver extends BaseSolver {
       reservedNetId === -2 ||
       (reservedNetId !== -1 && reservedNetId !== this.state.currentRouteNetId)
     )
+  }
+
+  private getMinimumPortPenaltyByRegionForRoute(
+    routeId: RouteId,
+  ): MinimumPortPenaltyByRegion {
+    const cachedPenalty = this.minimumPortPenaltyByRoute[routeId]
+    if (cachedPenalty) return cachedPenalty
+
+    const minimumPenalty = getMinimumPortPenaltyByRegion({
+      graph: this.portPenaltyComponentGraph,
+      topology: this.topology,
+      routeNetId: this.problem.routeNet[routeId]!,
+      goalPortId: this.problem.routeEndPort[routeId]!,
+    })
+    this.minimumPortPenaltyByRoute[routeId] = minimumPenalty
+    return minimumPenalty
   }
 
   isRegionReservedForDifferentNet(regionId: RegionId): boolean {
