@@ -587,32 +587,28 @@ export class TinyHyperGraphSolver extends BaseSolver {
       return
     }
 
-    if (currentCandidate.portId === state.goalPortId) {
-      this.onPathFound(currentCandidate)
-      return
-    }
-
     const neighbors =
       topology.regionIncidentPorts[currentCandidate.nextRegionId]
 
     for (const neighborPortId of neighbors) {
       const assignedNetId = state.portAssignment[neighborPortId]
-      const neighborIsGoal = neighborPortId === state.goalPortId
       if (this.isPortReservedForDifferentNet(neighborPortId)) continue
+      if (neighborPortId === state.goalPortId) {
+        if (assignedNetId !== -1 && assignedNetId !== state.currentRouteNetId) {
+          continue
+        }
+        this.onPathFound(currentCandidate)
+        return
+      }
       if (assignedNetId !== -1 && assignedNetId !== state.currentRouteNetId) {
         continue
       }
       if (neighborPortId === currentCandidate.portId) continue
-      if (!neighborIsGoal && problem.portSectionMask[neighborPortId] === 0) {
-        continue
-      }
+      if (problem.portSectionMask[neighborPortId] === 0) continue
 
       const g = this.computeG(currentCandidate, neighborPortId)
       if (!Number.isFinite(g)) continue
-      if (neighborIsGoal) {
-        this.onPathFound(currentCandidate)
-        return
-      }
+      const h = this.computeH(neighborPortId)
 
       const nextRegionId =
         topology.incidentPortRegion[neighborPortId][0] ===
@@ -627,7 +623,6 @@ export class TinyHyperGraphSolver extends BaseSolver {
         continue
       }
 
-      const h = this.computeH(neighborPortId)
       const newCandidate = {
         prevRegionId: currentCandidate.nextRegionId,
         nextRegionId,
@@ -636,6 +631,11 @@ export class TinyHyperGraphSolver extends BaseSolver {
         h,
         f: g + h,
         prevCandidate: currentCandidate,
+      }
+
+      if (neighborPortId === state.goalPortId) {
+        this.onPathFound(newCandidate)
+        return
       }
 
       const candidateHopId = this.getHopId(neighborPortId, nextRegionId)
@@ -1536,11 +1536,8 @@ export class TinyHyperGraphSolver extends BaseSolver {
 class GreedyFinalRouteSolver extends TinyHyperGraphSolver {
   override computeG(
     currentCandidate: Candidate,
-    neighborPortId: PortId,
+    _neighborPortId: PortId,
   ): number {
-    const constraintAwareCost = super.computeG(currentCandidate, neighborPortId)
-    if (!Number.isFinite(constraintAwareCost)) return constraintAwareCost
-
     return currentCandidate.g
   }
 }
