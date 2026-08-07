@@ -20,6 +20,7 @@ export interface RegionPathSolverOptions {
   USE_TOPOLOGY_CAPACITY?: boolean
   MAX_NEGOTIATION_PASSES?: number
   SKIP_UNROUTABLE_ROUTES?: boolean
+  USE_TOPOLOGY_CAPACITY?: boolean
 }
 
 export interface RegionPathCandidate {
@@ -78,6 +79,7 @@ export class RegionPathSolver extends BaseSolver {
   USE_TOPOLOGY_CAPACITY = false
   MAX_NEGOTIATION_PASSES = 4
   SKIP_UNROUTABLE_ROUTES = false
+  USE_TOPOLOGY_CAPACITY = false
   skippedRouteIds: RouteId[] = []
   negotiationPass = 0
 
@@ -107,6 +109,9 @@ export class RegionPathSolver extends BaseSolver {
     }
     if (options?.SKIP_UNROUTABLE_ROUTES !== undefined) {
       this.SKIP_UNROUTABLE_ROUTES = options.SKIP_UNROUTABLE_ROUTES
+    }
+    if (options?.USE_TOPOLOGY_CAPACITY !== undefined) {
+      this.USE_TOPOLOGY_CAPACITY = options.USE_TOPOLOGY_CAPACITY
     }
 
     this.state = {
@@ -325,7 +330,8 @@ export class RegionPathSolver extends BaseSolver {
         ? 0
         : 1)
     const regionCapacity = this.regionGraph.regionCapacity[regionId]
-    const overflow = Math.max(0, nextUsage - regionCapacity)
+    const trackCapacity = this.getRegionCapacity(regionId)
+    const overflow = Math.max(0, nextUsage - trackCapacity)
     return (
       (nextUsage / regionCapacity) * this.MM_COST_FOR_FULL_REGION +
       overflow * this.getOverCapacityCost() +
@@ -334,6 +340,8 @@ export class RegionPathSolver extends BaseSolver {
   }
 
   computeEdgeEntryCost(edgeId: number): number {
+    if (!this.USE_TOPOLOGY_CAPACITY) return 0
+
     const currentNetId = this.state.currentRouteNetId
     const nextUsage =
       this.state.edgeUsage[edgeId] +
@@ -344,10 +352,15 @@ export class RegionPathSolver extends BaseSolver {
     const edgeCapacity = this.regionGraph.edges[edgeId]!.portIds.length
     const overflow = Math.max(0, nextUsage - edgeCapacity)
     return (
-      (nextUsage / edgeCapacity) * this.MM_COST_FOR_FULL_REGION +
       overflow * this.getOverCapacityCost() +
       this.state.edgeHistoricalCost[edgeId]
     )
+  }
+
+  getRegionCapacity(regionId: RegionId): number {
+    return this.USE_TOPOLOGY_CAPACITY
+      ? this.regionGraph.regionTrackCapacity[regionId]!
+      : this.regionGraph.regionCapacity[regionId]!
   }
 
   getOverCapacityCost(): number {
@@ -357,10 +370,11 @@ export class RegionPathSolver extends BaseSolver {
   }
 
   hasOverloadedResources(): boolean {
+    if (!this.USE_TOPOLOGY_CAPACITY) return false
+
     for (let regionId = 0; regionId < this.regionGraph.regionCount; regionId++) {
       if (
-        this.state.regionUsage[regionId] >
-        this.regionGraph.regionCapacity[regionId]
+        this.state.regionUsage[regionId] > this.getRegionCapacity(regionId)
       ) {
         return true
       }
@@ -377,7 +391,7 @@ export class RegionPathSolver extends BaseSolver {
     for (let regionId = 0; regionId < regionGraph.regionCount; regionId++) {
       const overflow = Math.max(
         0,
-        state.regionUsage[regionId] - regionGraph.regionCapacity[regionId],
+        state.regionUsage[regionId] - this.getRegionCapacity(regionId),
       )
       state.regionHistoricalCost[regionId] += overflow * overCapacityCost
     }
@@ -477,7 +491,7 @@ export class RegionPathSolver extends BaseSolver {
 
     for (let regionId = 0; regionId < regionGraph.regionCount; regionId++) {
       const usage = state.regionUsage[regionId]
-      const utilization = usage / regionGraph.regionCapacity[regionId]
+      const utilization = usage / this.getRegionCapacity(regionId)
       maxRegionUsage = Math.max(maxRegionUsage, usage)
       maxUtilization = Math.max(maxUtilization, utilization)
     }

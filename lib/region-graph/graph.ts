@@ -18,6 +18,7 @@ export interface RegionGraph {
   regionWidth: Float64Array
   regionHeight: Float64Array
   regionCapacity: Float64Array
+  regionTrackCapacity: Int32Array
   regionMetadata?: any[]
   edges: RegionGraphEdge[]
   incidentEdges: RegionGraphEdge[][]
@@ -155,7 +156,7 @@ export const createRegionGraph = (
     incidentEdges[edge.regionIdB]!.push(edge)
   }
 
-  const regionCapacity = Float64Array.from(
+  const regionTrackCapacity = Int32Array.from(
     { length: topology.regionCount },
     (_, regionId) => {
       const boundaryPortCount = incidentEdges[regionId]!.reduce(
@@ -177,7 +178,15 @@ export const createRegionGraph = (
     regionCenterY: topology.regionCenterY,
     regionWidth: topology.regionWidth,
     regionHeight: topology.regionHeight,
-    regionCapacity,
+    regionCapacity: Float64Array.from(
+      { length: topology.regionCount },
+      (_, regionId) =>
+        Math.max(
+          1e-6,
+          topology.regionWidth[regionId] * topology.regionHeight[regionId],
+        ),
+    ),
+    regionTrackCapacity,
     regionMetadata: topology.regionMetadata,
     edges,
     incidentEdges,

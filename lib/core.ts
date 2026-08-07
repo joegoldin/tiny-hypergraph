@@ -1446,6 +1446,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       ),
       MAX_NEGOTIATION_PASSES: maxNegotiationPasses,
       SKIP_UNROUTABLE_ROUTES: true,
+      USE_TOPOLOGY_CAPACITY: true,
     })
     regionPathSolver.solve()
 
