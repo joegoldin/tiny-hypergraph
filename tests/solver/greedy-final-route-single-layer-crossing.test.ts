@@ -1,4 +1,9 @@
+import "bun-match-svg"
 import { expect, test } from "bun:test"
+import {
+  getSvgFromGraphicsObject,
+  stackGraphicsVertically,
+} from "graphics-debug"
 import {
   type TinyHyperGraphProblem,
   TinyHyperGraphSolver,
@@ -23,8 +28,8 @@ test("reproduces greedy final routing through a same-layer crossing", () => {
     regionAvailableZMask: Int32Array.from([1, 1, 1, 1, 1]),
     portAngleForRegion1: Int32Array.from([0, 1, 2, 3]),
     portAngleForRegion2: new Int32Array(4),
-    portX: new Float64Array(4),
-    portY: new Float64Array(4),
+    portX: Float64Array.from([0.5, 0, -0.5, 0]),
+    portY: Float64Array.from([0, 0.5, 0, -0.5]),
     portZ: new Int32Array(4),
   }
   const problem: TinyHyperGraphProblem = {
@@ -41,8 +46,17 @@ test("reproduces greedy final routing through a same-layer crossing", () => {
   const solver = new TinyHyperGraphSolver(topology, problem, {
     GREEDY_FINAL_ROUTE_ITERS: 1,
   })
+  const beforeSolveGraphics = solver.visualize()
 
   solver.tryFinalAcceptance()
+  const afterSolveGraphics = solver.visualize()
+
+  const stagedSvg = getSvgFromGraphicsObject(
+    stackGraphicsVertically([beforeSolveGraphics, afterSolveGraphics], {
+      titles: ["before greedy acceptance", "after greedy acceptance"],
+    }),
+  )
+  expect(stagedSvg).toMatchSvgSnapshot(import.meta.path)
 
   expect({
     solved: solver.solved,
