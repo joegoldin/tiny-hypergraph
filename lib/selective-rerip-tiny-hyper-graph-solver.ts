@@ -186,7 +186,12 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
   }
 
   override onOutOfCandidates(): void {
-    if (this.retryCurrentRouteWithGlobalSearch()) return
+    if (
+      this.USE_REGION_PATH_CORRIDORS &&
+      this.retryCurrentRouteWithGlobalSearch()
+    ) {
+      return
+    }
 
     const failedRouteId = this.state.currentRouteId
     if (failedRouteId === undefined) {
@@ -399,6 +404,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       if (neighborPortId === state.portId) continue
       if (this.isPortReservedForDifferentNet(neighborPortId)) continue
       if (
+        this.USE_REGION_PATH_CORRIDORS &&
         !this.isPortAllowedByPreferredRegionCorridor(
           state.nextRegionId,
           neighborPortId,

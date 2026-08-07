@@ -608,6 +608,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       const assignedNetId = state.portAssignment[neighborPortId]
       if (this.isPortReservedForDifferentNet(neighborPortId)) continue
       if (
+        this.USE_REGION_PATH_CORRIDORS &&
         !this.isPortAllowedByPreferredRegionCorridor(
           currentCandidate.nextRegionId,
           neighborPortId,
@@ -1362,7 +1363,12 @@ export class TinyHyperGraphSolver extends BaseSolver {
   }
 
   onOutOfCandidates() {
-    if (this.retryCurrentRouteWithGlobalSearch()) return
+    if (
+      this.USE_REGION_PATH_CORRIDORS &&
+      this.retryCurrentRouteWithGlobalSearch()
+    ) {
+      return
+    }
 
     const { topology, state } = this
     const currentRouteId = state.currentRouteId
