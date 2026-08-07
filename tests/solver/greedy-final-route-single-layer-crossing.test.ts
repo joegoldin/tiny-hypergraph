@@ -10,7 +10,7 @@ import {
   type TinyHyperGraphTopology,
 } from "lib/index"
 
-test("reproduces greedy final routing through a same-layer crossing", () => {
+test("greedy final routing rejects a same-layer crossing", () => {
   const topology: TinyHyperGraphTopology = {
     portCount: 4,
     regionCount: 5,
@@ -66,9 +66,9 @@ test("reproduces greedy final routing through a same-layer crossing", () => {
       solver.state.regionIntersectionCaches[0].existingSameLayerIntersections,
   }).toMatchInlineSnapshot(`
     {
-      "acceptedGreedyFinalRouteOnTimeout": true,
-      "sameLayerCrossings": 1,
-      "solved": true,
+      "acceptedGreedyFinalRouteOnTimeout": undefined,
+      "sameLayerCrossings": 0,
+      "solved": false,
     }
   `)
 })

@@ -3,9 +3,8 @@ region: region-0
 z: 0" points="535.5427445183542,175.0677506775068 314.79871889627987,175.0677506775068" fill="none" stroke="hsla(266, 70%, 50%, 0.8)" stroke-width="1px"/></g><g><polyline data-points="0,0.5 0,-0.5" data-type="line" data-label="route-1
 z: 0" points="425.17073170731703,64.69573786646961 425.17073170731703,285.43976348854403" fill="none" stroke="hsla(28, 70%, 50%, 0.8)" stroke-width="1px" stroke-dasharray="3 3"/></g><g><polyline data-points="0.5,-1.375 -0.5,-1.375" data-type="line" data-label="route: route-0
 region: region-0
-z: 0" points="535.5427445183542,478.5907859078591 314.79871889627987,478.5907859078591" fill="none" stroke="hsla(266, 70%, 50%, 0.8)" stroke-width="1px"/></g><g><polyline data-points="0,-0.875 0,-1.875" data-type="line" data-label="route: route-1
-region: region-0
-z: 0" points="425.17073170731703,368.2187730968219 425.17073170731703,588.9627987188962" fill="none" stroke="hsla(28, 70%, 50%, 0.8)" stroke-width="1px"/></g><g><rect data-type="rect" data-label="region: region-0
+z: 0" points="535.5427445183542,478.5907859078591 314.79871889627987,478.5907859078591" fill="none" stroke="hsla(266, 70%, 50%, 0.8)" stroke-width="1px"/></g><g><polyline data-points="0,-0.875 0,-1.875" data-type="line" data-label="route-1
+z: 0" points="425.17073170731703,368.2187730968219 425.17073170731703,588.9627987188962" fill="none" stroke="hsla(28, 70%, 50%, 0.8)" stroke-width="1px" stroke-dasharray="3 3"/></g><g><rect data-type="rect" data-label="region: region-0
 net: free
 cost: 0.000
 congestion: 0.000
@@ -37,11 +36,11 @@ same layer X: 0
 trans X: 0
 entry exit X: 0" data-x="0" data-y="0" x="320.31731953683175" y="70.21433850702147" width="209.70682434097063" height="209.70682434097068" fill="rgba(200, 200, 255, 0.1)" stroke="rgba(128, 128, 128, 0.5)" stroke-width="0.0045301339285714285"/></g><g><rect data-type="rect" data-label="region: region-0
 net: free
-cost: 10.567
+cost: 0.000
 congestion: 0.000
-same layer X: 1
+same layer X: 0
 trans X: 0
-entry exit X: 0" data-x="0" data-y="-1.375" x="320.31731953683175" y="373.73737373737373" width="209.70682434097063" height="209.70682434097068" fill="rgba(255, 64, 64, 0.72)" stroke="rgba(128, 128, 128, 0.5)" stroke-width="0.0045301339285714285"/></g><g><rect data-type="rect" data-label="region: region-1
+entry exit X: 0" data-x="0" data-y="-1.375" x="320.31731953683175" y="373.73737373737373" width="209.70682434097063" height="209.70682434097068" fill="rgba(200, 200, 255, 0.1)" stroke="rgba(128, 128, 128, 0.5)" stroke-width="0.0045301339285714285"/></g><g><rect data-type="rect" data-label="region: region-1
 net: free
 cost: 0.000
 congestion: 0.000
@@ -110,13 +109,8 @@ net: 0
 z: 0" data-x="0.5" data-y="-1.375" cx="535.5427445183542" cy="478.5907859078591" r="3" fill="hsla(266, 70%, 50%, 1)"/></g><g><circle data-type="point" data-label="route: route-0
 port: port-2
 net: 0
-z: 0" data-x="-0.5" data-y="-1.375" cx="314.79871889627987" cy="478.5907859078591" r="3" fill="hsla(266, 70%, 50%, 1)"/></g><g><circle data-type="point" data-label="route: route-1
-port: port-1
-net: 1
-z: 0" data-x="0" data-y="-0.875" cx="425.17073170731703" cy="368.2187730968219" r="3" fill="hsla(28, 70%, 50%, 1)"/></g><g><circle data-type="point" data-label="route: route-1
-port: port-3
-net: 1
-z: 0" data-x="0" data-y="-1.875" cx="425.17073170731703" cy="588.9627987188962" r="3" fill="hsla(28, 70%, 50%, 1)"/></g><g id="crosshair" style="display: none"><line id="crosshair-h" y1="0" y2="640" stroke="#666" stroke-width="0.5"/><line id="crosshair-v" x1="0" x2="640" stroke="#666" stroke-width="0.5"/><text id="coordinates" font-family="monospace" font-size="12" fill="#666"></text></g><script><![CDATA[
+z: 0" data-x="-0.5" data-y="-1.375" cx="314.79871889627987" cy="478.5907859078591" r="3" fill="hsla(266, 70%, 50%, 1)"/></g><g><circle data-type="point" data-label="route-1
+z: 0" data-x="0" data-y="-1.375" cx="425.17073170731703" cy="478.5907859078591" r="3" fill="hsla(28, 70%, 50%, 1)"/></g><g id="crosshair" style="display: none"><line id="crosshair-h" y1="0" y2="640" stroke="#666" stroke-width="0.5"/><line id="crosshair-v" x1="0" x2="640" stroke="#666" stroke-width="0.5"/><text id="coordinates" font-family="monospace" font-size="12" fill="#666"></text></g><script><![CDATA[
               document.currentScript.parentElement.addEventListener('mousemove', (e) => {
                 const svg = e.currentTarget;
                 const rect = svg.getBoundingClientRect();
