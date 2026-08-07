@@ -11,6 +11,7 @@ test("region path planner assigns a constrained one-lane boundary", () => {
   const solver = new RegionPathSolver(
     negotiatedRegionPathTopology,
     negotiatedRegionPathProblem,
+    { USE_TOPOLOGY_CAPACITY: true },
   )
 
   solver.solve()
