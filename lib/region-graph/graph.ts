@@ -155,6 +155,21 @@ export const createRegionGraph = (
     incidentEdges[edge.regionIdB]!.push(edge)
   }
 
+  const regionCapacity = Float64Array.from(
+    { length: topology.regionCount },
+    (_, regionId) => {
+      const boundaryPortCount = incidentEdges[regionId]!.reduce(
+        (sum, edge) => sum + edge.portIds.length,
+        0,
+      )
+
+      // A route passing through a region consumes an entrance and an exit.
+      // Boundary port-points already include the available layers, so half
+      // their count is a topology-derived upper bound on simultaneous tracks.
+      return Math.max(1, Math.floor(boundaryPortCount / 2))
+    },
+  )
+
   return {
     regionCount: topology.regionCount,
     edgeCount: edges.length,
@@ -162,14 +177,7 @@ export const createRegionGraph = (
     regionCenterY: topology.regionCenterY,
     regionWidth: topology.regionWidth,
     regionHeight: topology.regionHeight,
-    regionCapacity: Float64Array.from(
-      { length: topology.regionCount },
-      (_, regionId) =>
-        Math.max(
-          1e-6,
-          topology.regionWidth[regionId] * topology.regionHeight[regionId],
-        ),
-    ),
+    regionCapacity,
     regionMetadata: topology.regionMetadata,
     edges,
     incidentEdges,

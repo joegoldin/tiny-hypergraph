@@ -186,6 +186,8 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
   }
 
   override onOutOfCandidates(): void {
+    if (this.retryCurrentRouteWithGlobalSearch()) return
+
     const failedRouteId = this.state.currentRouteId
     if (failedRouteId === undefined) {
       throw new Error(
@@ -193,7 +195,13 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
       )
     }
 
-    const directPath = this.findRelaxedBlockerPath()
+    let directPath = this.findRelaxedBlockerPath(new Set<RouteId>(), 2)
+    if (!directPath.found) {
+      directPath = this.findRelaxedBlockerPath(
+        new Set<RouteId>(),
+        Number.POSITIVE_INFINITY,
+      )
+    }
     if (!directPath.found || directPath.owners.size === 0) {
       this.selectiveReripStats.globalReripCount += 1
       this.selectiveReripStats.globalReripReason = !directPath.found
@@ -309,6 +317,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
 
   protected findRelaxedBlockerPath(
     forbiddenOwnerRouteIds: ReadonlySet<RouteId> = new Set<RouteId>(),
+    searchScope = Number.POSITIVE_INFINITY,
   ): DistinctOwnerBlockerSearchResult<
     RelaxedSearchState,
     RouteId,
@@ -344,6 +353,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
           routeNetId,
           portOwners,
           forbiddenOwnerRouteIds,
+          searchScope,
         }),
       maxExpandedLabels: this.getRelaxedSearchExpansionLimit(),
     })
@@ -367,6 +377,7 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     routeNetId: number
     portOwners: ReadonlyMap<PortId, ReadonlySet<RouteId>>
     forbiddenOwnerRouteIds: ReadonlySet<RouteId>
+    searchScope: number
   }): Array<{
     state: RelaxedSearchState
     distance: number
@@ -387,6 +398,15 @@ export class SelectiveReripTinyHyperGraphSolver extends DistanceAwareTinyHyperGr
     ] ?? []) {
       if (neighborPortId === state.portId) continue
       if (this.isPortReservedForDifferentNet(neighborPortId)) continue
+      if (
+        !this.isPortAllowedByPreferredRegionCorridor(
+          state.nextRegionId,
+          neighborPortId,
+          params.searchScope,
+        )
+      ) {
+        continue
+      }
       if (
         neighborPortId !== goalPortId &&
         this.problem.portSectionMask[neighborPortId] === 0
