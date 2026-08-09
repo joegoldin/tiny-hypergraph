@@ -598,6 +598,12 @@ export const loadSerializedHyperGraph = (
       }),
   )
 
+  const portPenalty = Float64Array.from(filteredHyperGraph.ports, (port) => {
+    const penalty = Number(port.d?.tinyHypergraphPortPenalty ?? 0)
+    return Number.isFinite(penalty) && penalty > 0 ? penalty : 0
+  })
+  const hasPortPenalties = portPenalty.some((penalty) => penalty > 0)
+
   const problem: TinyHyperGraphProblem = {
     routeCount,
     portSectionMask,
@@ -607,6 +613,7 @@ export const loadSerializedHyperGraph = (
     routeNet,
     regionNetId,
     ...(initialAssignments.length > 0 && { initialAssignments }),
+    ...(hasPortPenalties && { portPenalty }),
   }
 
   const solvedRoutePathSegments: TinyHyperGraphSolution["solvedRoutePathSegments"] =
