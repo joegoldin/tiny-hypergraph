@@ -410,17 +410,17 @@ jobs:
 
             const renderSummaryRows = (label, report) => {
               if (!report) {
-                return [`| ${label} | n/a | n/a | n/a | n/a | n/a | n/a |`]
+                return [`| ${label} | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |`]
               }
 
               return [
-                `| ${label} | ${formatValue(report.datasetName)} | ${formatValue(report.solverVariant)} | ${formatValue(report.candidateFamilies)} | ${report.summary?.successRate ?? 'n/a'} | ${formatTime(report.summary?.p50DurationMs)} | ${formatTime(report.summary?.p95DurationMs)} |`,
+                `| ${label} | ${formatValue(report.datasetName)} | ${formatValue(report.solverVariant)} | ${formatValue(report.candidateFamilies)} | ${report.summary?.successRate ?? 'n/a'} | ${report.summary?.routeCompletionRate ?? 'n/a'} | ${formatNumber(report.summary?.avgFinalMaxRegionCost)} | ${formatNumber(report.summary?.avgRouteHops)} | ${formatTime(report.summary?.p50DurationMs)} | ${formatTime(report.summary?.p95DurationMs)} |`,
               ]
             }
 
             const renderComparison = (mainReport, prReport) => [
-              '| Run | Dataset | Solver | Families | Success | P50 | P95 |',
-              '| --- | --- | --- | --- | ---: | ---: | ---: |',
+              '| Run | Dataset | Solver | Families | Success | Routes | Final Cost | Avg Hops | P50 | P95 |',
+              '| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |',
               ...renderSummaryRows('Main', mainReport),
               ...renderSummaryRows('PR', prReport),
             ]
@@ -433,11 +433,12 @@ jobs:
               const samples = options.limit ? report.samples.slice(0, options.limit) : report.samples
               const omittedCount = report.samples.length - samples.length
               return [
-                '| Sample | Status | Baseline | Final | Delta | Attempts | Duration | Error |',
-                '| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |',
+                '| Sample | Status | Routes | Baseline | Final | Delta | Hops | Rips | Attempts | Iterations | Duration | Error |',
+                '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
                 ...samples.map((sample) => {
                   const firstErrorLine = sample.error ? String(sample.error).split('\n')[0] : ''
-                  return `| ${escapeHtml(sample.sampleName)} | ${escapeHtml(sample.status)} | ${formatNumber(sample.baselineMaxRegionCost)} | ${formatNumber(sample.finalMaxRegionCost)} | ${formatNumber(sample.delta)} | ${sample.candidateCount ?? 0} | ${formatTime(sample.durationMs)} | ${escapeHtml(truncate(firstErrorLine))} |`
+                  const routes = `${sample.solvedRouteCount ?? 0}/${sample.connectionCount ?? 0}`
+                  return `| ${escapeHtml(sample.sampleName)} | ${escapeHtml(sample.status)} | ${routes} | ${formatNumber(sample.baselineMaxRegionCost)} | ${formatNumber(sample.finalMaxRegionCost)} | ${formatNumber(sample.delta)} | ${formatNumber(sample.avgRouteHops)} | ${sample.requiredRipRouteCount ?? 0} | ${sample.candidateCount ?? 0} | ${sample.iterations ?? 0} | ${formatTime(sample.durationMs)} | ${escapeHtml(truncate(firstErrorLine))} |`
                 }),
                 ...(omittedCount > 0
                   ? ['', `_${omittedCount} additional sample${omittedCount === 1 ? '' : 's'} omitted to keep the comment compact._`]
@@ -456,16 +457,29 @@ jobs:
                 '| Metric | Value |',
                 '| --- | ---: |',
                 `| Dataset | ${formatValue(report.datasetName)} |`,
+                `| Source | ${formatValue(report.datasetSource)} |`,
+                `| Revision | ${formatValue(report.datasetRevision)} |`,
+                `| Sample selection | ${formatValue(report.sampleSelection)} |`,
                 `| Solver | ${formatValue(report.solverVariant)} |`,
                 `| Families | ${formatValue(report.candidateFamilies)} |`,
                 `| Samples | ${report.sampleCount ?? 'n/a'} |`,
                 `| Success rate | ${report.summary?.successRate ?? 'n/a'} |`,
+                `| Solved-route completion rate | ${report.summary?.routeCompletionRate ?? 'n/a'} |`,
                 `| Improved rate | ${report.summary?.improvedRate ?? 'n/a'} |`,
                 `| Zero final max region cost rate | ${report.summary?.zeroFinalCostRate ?? 'n/a'} |`,
+                `| Total completion time | ${formatTime(report.summary?.totalDurationMs)} |`,
                 `| Avg baseline max region cost | ${formatNumber(report.summary?.avgBaselineMaxRegionCost)} |`,
                 `| Avg final max region cost | ${formatNumber(report.summary?.avgFinalMaxRegionCost)} |`,
                 `| Avg max region delta | ${formatNumber(report.summary?.avgMaxRegionDelta)} |`,
                 `| Avg candidate count | ${formatNumber(report.summary?.avgCandidateCount)} |`,
+                `| Avg generated candidate count | ${formatNumber(report.summary?.avgGeneratedCandidateCount)} |`,
+                `| Avg duplicate candidate count | ${formatNumber(report.summary?.avgDuplicateCandidateCount)} |`,
+                `| Avg iterations | ${formatNumber(report.summary?.avgIterations)} |`,
+                `| Avg route hops | ${formatNumber(report.summary?.avgRouteHops)} |`,
+                `| Routes requiring rip | ${report.summary?.totalRequiredRipRouteCount ?? 'n/a'} |`,
+                `| Avg solveGraph time | ${formatTime(report.summary?.avgSolveGraphMs)} |`,
+                `| Avg section search time | ${formatTime(report.summary?.avgSectionSearchMs)} |`,
+                `| Avg optimizeSection time | ${formatTime(report.summary?.avgOptimizeSectionMs)} |`,
                 `| Avg duration | ${formatTime(report.summary?.avgDurationMs)} |`,
                 `| P50 duration | ${formatTime(report.summary?.p50DurationMs)} |`,
                 `| P95 duration | ${formatTime(report.summary?.p95DurationMs)} |`,
