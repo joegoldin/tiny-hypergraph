@@ -69,6 +69,8 @@ The behavior can be tuned through `TinyHyperGraphSolverOptions`:
 ```ts
 const solver = new SelectiveReripTinyHyperGraphSolver(topology, problem, {
   PARTIAL_RIP_ENABLED: true,
+  PARTIAL_RIP_MIN_ROUTE_COUNT: 60,
+  PARTIAL_RIP_MAX_ROUTE_COUNT: 350,
   PARTIAL_RIP_MAX_DISTANCE: 12,
   PARTIAL_RIP_QUALITY_MAX_DISTANCE: 24,
   PARTIAL_RIP_MAX_ATTEMPTS: 10,
@@ -78,7 +80,10 @@ const solver = new SelectiveReripTinyHyperGraphSolver(topology, problem, {
 ```
 
 Set `PARTIAL_RIP_ENABLED` or `OUTSIDE_IN_ROUTING` to `false` to use the legacy
-whole-route or one-ended behavior respectively. The solver exposes aggregate
+whole-route or one-ended behavior respectively.
+`PARTIAL_RIP_MIN_ROUTE_COUNT` and `PARTIAL_RIP_MAX_ROUTE_COUNT` provide an
+inclusive scale window; graphs outside it use the legacy behavior. The solver
+exposes aggregate
 partial-rip, retained-segment, frontier-expansion, distance-prune, and fallback
 counts through `solver.stats`. When the first completed solution is already
 within 1.5 times the configured final rip threshold, the solver uses the

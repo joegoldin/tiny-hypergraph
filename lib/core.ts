@@ -258,6 +258,8 @@ export interface TinyHyperGraphSolverOptions {
   PARTIAL_RIP_ENABLED?: boolean
   /** Minimum route count required to enable partial-rip optimization. */
   PARTIAL_RIP_MIN_ROUTE_COUNT?: number
+  /** Maximum route count allowed to use partial-rip optimization. */
+  PARTIAL_RIP_MAX_ROUTE_COUNT?: number
   /** Maximum old-route distance reopened on either side of a hot segment. */
   PARTIAL_RIP_MAX_DISTANCE?: number
   /** Larger partial-rip window used when the initial solution is near target. */
@@ -300,6 +302,7 @@ export interface TinyHyperGraphSolverOptionTarget {
   GREEDY_FINAL_ROUTE_ITERS: number
   PARTIAL_RIP_ENABLED?: boolean
   PARTIAL_RIP_MIN_ROUTE_COUNT?: number
+  PARTIAL_RIP_MAX_ROUTE_COUNT?: number
   PARTIAL_RIP_MAX_DISTANCE?: number
   PARTIAL_RIP_QUALITY_MAX_DISTANCE?: number
   PARTIAL_RIP_MAX_ATTEMPTS?: number
@@ -371,6 +374,9 @@ export const applyTinyHyperGraphSolverOptions = (
   if (options.PARTIAL_RIP_MIN_ROUTE_COUNT !== undefined) {
     solver.PARTIAL_RIP_MIN_ROUTE_COUNT = options.PARTIAL_RIP_MIN_ROUTE_COUNT
   }
+  if (options.PARTIAL_RIP_MAX_ROUTE_COUNT !== undefined) {
+    solver.PARTIAL_RIP_MAX_ROUTE_COUNT = options.PARTIAL_RIP_MAX_ROUTE_COUNT
+  }
   if (options.PARTIAL_RIP_MAX_DISTANCE !== undefined) {
     solver.PARTIAL_RIP_MAX_DISTANCE = options.PARTIAL_RIP_MAX_DISTANCE
   }
@@ -429,6 +435,7 @@ export const getTinyHyperGraphSolverOptions = (
   GREEDY_FINAL_ROUTE_ITERS: solver.GREEDY_FINAL_ROUTE_ITERS,
   PARTIAL_RIP_ENABLED: solver.PARTIAL_RIP_ENABLED,
   PARTIAL_RIP_MIN_ROUTE_COUNT: solver.PARTIAL_RIP_MIN_ROUTE_COUNT,
+  PARTIAL_RIP_MAX_ROUTE_COUNT: solver.PARTIAL_RIP_MAX_ROUTE_COUNT,
   PARTIAL_RIP_MAX_DISTANCE: solver.PARTIAL_RIP_MAX_DISTANCE,
   PARTIAL_RIP_QUALITY_MAX_DISTANCE: solver.PARTIAL_RIP_QUALITY_MAX_DISTANCE,
   PARTIAL_RIP_MAX_ATTEMPTS: solver.PARTIAL_RIP_MAX_ATTEMPTS,
@@ -491,6 +498,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
   GREEDY_FINAL_ROUTE_ITERS = 4
   PARTIAL_RIP_ENABLED = false
   PARTIAL_RIP_MIN_ROUTE_COUNT = 0
+  PARTIAL_RIP_MAX_ROUTE_COUNT = Number.POSITIVE_INFINITY
   PARTIAL_RIP_MAX_DISTANCE = 12
   PARTIAL_RIP_QUALITY_MAX_DISTANCE?: number
   PARTIAL_RIP_MAX_ATTEMPTS = Number.POSITIVE_INFINITY

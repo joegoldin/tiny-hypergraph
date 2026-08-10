@@ -336,3 +336,29 @@ runtime from 5.704 s to 5.374 s (1.06x) and improving the paired median by
 
 The package benchmark remained 8/8 solved with the same 1.739 average maximum
 region cost and completed in 20.632 s (4.63x faster than main's 95.441 s).
+
+## Trial 15 - full-holdout scale bounds
+
+The first hosted autorouter `/benchmark-all` run confirmed the large-graph win
+but exposed that the 20-route activation boundary was too broad:
+
+- dataset01: 100% completion, 91.8% DRC versus 90.6% on main, and 6.5 s P50
+  versus 7.0 s;
+- SRJ18: 56.3% completion versus 50.0%, equal 25.0% DRC, and 83.4 s P50
+  versus 144.4 s;
+- SRJ19: 78.5% completion versus 82.5% and 35.0% DRC versus 37.0%;
+- SRJ21 and preloaded SRJ23 preserve their completion and DRC rates exactly.
+
+SRJ19 telemetry showed that all 13 completion regressions had 41-59 routes.
+Raising the minimum from 20 to 60 restores those graphs to the established
+solver. It retains the 61-route sample068 completion/DRC gain, where partial
+ripping improves max region cost from 11.148 to 2.401 and total region cost
+from 48.803 to 24.171.
+
+The SRJ18 sample008 holdout (361 routes) also showed that partial candidates
+could not satisfy the total-cost envelope. Bypassing partial routing above 350
+routes improved its selected max region cost from 3.400 to 2.244, reduced the
+squared region-segment count from 10,628 to 7,437, and cut a controlled local
+end-to-end run from 182.7 s to 93.1 s while restoring the main-like 299-via
+topology. The accepted integration therefore enables partial routing only for
+60-350 routes, with both bounds configurable.

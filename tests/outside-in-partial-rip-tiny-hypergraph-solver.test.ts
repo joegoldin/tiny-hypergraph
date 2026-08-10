@@ -144,6 +144,19 @@ test("small graphs bypass partial rip and outside-in routing", () => {
   expect(solver.OUTSIDE_IN_ROUTING).toBe(false)
 })
 
+test("oversized graphs bypass partial rip and outside-in routing", () => {
+  const solver = createLinearSolver(
+    24,
+    {
+      PARTIAL_RIP_MAX_ROUTE_COUNT: 2,
+    },
+    3,
+  )
+
+  expect(solver.PARTIAL_RIP_ENABLED).toBe(false)
+  expect(solver.OUTSIDE_IN_ROUTING).toBe(false)
+})
+
 test("the configured warmup performs a whole-graph rerip first", () => {
   const solver = createLinearSolver(24, {
     PARTIAL_RIP_MAX_ATTEMPTS: 1,

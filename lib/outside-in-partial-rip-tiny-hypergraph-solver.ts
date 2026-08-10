@@ -115,7 +115,10 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     ) {
       this.PARTIAL_RIP_MAX_ATTEMPTS = 10
     }
-    if (problem.routeCount < Math.max(0, this.PARTIAL_RIP_MIN_ROUTE_COUNT)) {
+    if (
+      problem.routeCount < Math.max(0, this.PARTIAL_RIP_MIN_ROUTE_COUNT) ||
+      problem.routeCount > Math.max(0, this.PARTIAL_RIP_MAX_ROUTE_COUNT)
+    ) {
       this.PARTIAL_RIP_ENABLED = false
       this.OUTSIDE_IN_ROUTING = false
     }
