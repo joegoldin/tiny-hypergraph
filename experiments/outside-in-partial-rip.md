@@ -365,3 +365,41 @@ squared region-segment count from 10,628 to 7,437, and cut a controlled local
 end-to-end run from 182.7 s to 93.1 s while restoring the main-like 299-via
 topology. The accepted integration therefore enables partial routing only for
 100-350 routes, with both bounds configurable.
+
+## Trial 16 - dependency-boundary compatibility and first-state cost guard
+
+The first 100-350 holdout still showed a small SRJ19 completion difference
+(82.0% versus 82.5%) even though every SRJ19 graph was below the activation
+window. A route-count-84 regression fixture also changed its SVG by 33.9% with
+both partial ripping and outside-in routing disabled. This was not partial-rip
+bookkeeping: the newer tiny-hypergraph base loads serialized port penalties,
+so the autorouter's duplicate-congested-port prepass began using penalties that
+its pinned main version intentionally ignored. That changed the duplicated
+topology before the gated solver ran.
+
+`DuplicateCongestedPortSolver` now has an explicit
+`useSerializedPortPenalties` compatibility option. The autorouter disables the
+penalties only for this topology prepass, then applies the same metadata,
+duplicate-port, and cramped-port penalties as main to the final graph. On
+bugreport80 this restores the exact main graph dimensions and penalty totals
+(84 routes, 15,766 ports, 1,593 regions, total penalty 3,226,600); the complete
+91.1 s local route again passes its existing SVG tolerance instead of differing
+by 33.9%.
+
+The holdout also identified a region-cost envelope bug on bugreport58. The
+post-warmup quality baseline could be worse than the first complete solution,
+allowing complexity selection to return max region cost 0.670 from a 0.519
+first state (29.1% growth). Complexity eligibility is now anchored to the first
+complete state. The selected result has max region cost 0.510 (1.7% better than
+first) and total region cost 4.911 (8.3% above first, inside the configured 10%
+limit), while its stitch-connectivity assertions continue to pass. A focused
+regression test now prevents selection from crossing the configured first-state
+max and total cost envelopes.
+
+Before these final compatibility fixes, the bounded hosted SRJ18 run already
+improved completion from 8/16 to 10/16, held relaxed DRC at 4/16, and reduced
+P50 from 144.4 s to 84.1 s. Every one of the nine partial-enabled completed
+cases improved max region cost, by 34.3% on average; average total region cost
+improved 18.8%. The final full holdout is rerun after pinning this compatibility
+revision so gated datasets can be compared without the dependency-upgrade
+topology change.

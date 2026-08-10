@@ -1007,12 +1007,13 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     if (!qualityBaseline) {
       return this.compareRegionCostSummaries(summary, bestSummary) < 0
     }
+    const selectionBaseline = this.firstCompletedRoundSummary ?? qualityBaseline
 
     const maxRegionCostCeiling =
-      qualityBaseline.maxRegionCost *
+      selectionBaseline.maxRegionCost *
       (1 + Math.max(0, this.PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO))
     const totalRegionCostCeiling =
-      qualityBaseline.totalRegionCost *
+      selectionBaseline.totalRegionCost *
       (1 + Math.max(0, this.PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO))
     const isEligible =
       summary.maxRegionCost <= maxRegionCostCeiling &&

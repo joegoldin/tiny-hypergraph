@@ -191,3 +191,39 @@ test("complexity-aware selection activates only at its route-count gate", () => 
   expect(belowGateSolver.stats.partialRipComplexityAwareSelection).toBe(false)
   expect(atGateSolver.stats.partialRipComplexityAwareSelection).toBe(true)
 })
+
+test("complexity selection cannot exceed the first solution cost envelope", () => {
+  const solver = createLinearSolver(
+    24,
+    {
+      PARTIAL_RIP_MAX_ATTEMPTS: 1,
+      PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT: 100,
+      PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO: 0.2,
+      PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO: 0.1,
+    },
+    100,
+  )
+  solver.state.regionIntersectionCaches[3]!.existingRegionCost = 1
+
+  solver.onAllRoutesRouted()
+
+  solver.state.portAssignment.fill(0)
+  solver.state.unroutedRoutes = []
+  solver.state.currentRouteId = undefined
+  solver.state.currentRouteNetId = undefined
+  solver.state.regionSegments = Array.from({ length: 6 }, () => [])
+  solver.state.regionSegments[1] = [[0, 0, 1]]
+  solver.state.regionSegments[2] = [[0, 1, 2]]
+  solver.state.regionSegments[3] = [[0, 2, 3]]
+  solver.state.regionSegments[4] = [[0, 3, 4]]
+  for (const cache of solver.state.regionIntersectionCaches) {
+    cache.existingRegionCost = 0
+  }
+  solver.state.regionIntersectionCaches[3]!.existingRegionCost = 1.21
+
+  solver.onAllRoutesRouted()
+
+  expect(solver.solved).toBe(true)
+  expect(solver.stats.bestMaxRegionCost).toBe(1)
+  expect(solver.state.regionIntersectionCaches[3]!.existingRegionCost).toBe(1)
+})
