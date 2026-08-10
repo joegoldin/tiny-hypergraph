@@ -349,11 +349,14 @@ but exposed that the 20-route activation boundary was too broad:
 - SRJ19: 78.5% completion versus 82.5% and 35.0% DRC versus 37.0%;
 - SRJ21 and preloaded SRJ23 preserve their completion and DRC rates exactly.
 
-SRJ19 telemetry showed that all 13 completion regressions had 41-59 routes.
-Raising the minimum from 20 to 60 restores those graphs to the established
-solver. It retains the 61-route sample068 completion/DRC gain, where partial
-ripping improves max region cost from 11.148 to 2.401 and total region cost
-from 48.803 to 24.171.
+SRJ19 telemetry showed that all 13 completion regressions had 41-59 routes. An
+intermediate minimum of 60 restored those graphs while retaining the 61-route
+sample068 completion/DRC gain, where partial ripping improves max region cost
+from 11.148 to 2.401 and total region cost from 48.803 to 24.171. The full
+SRJ20 holdout then showed 67.0% completion versus 70.0% on main (with 31.0%
+versus 30.5% DRC); its last remaining completion regression had 62 routes.
+The final 100-route boundary cleanly preserves the medium datasets while every
+SRJ18 graph remains eligible (the smallest has 114 routes).
 
 The SRJ18 sample008 holdout (361 routes) also showed that partial candidates
 could not satisfy the total-cost envelope. Bypassing partial routing above 350
@@ -361,4 +364,4 @@ routes improved its selected max region cost from 3.400 to 2.244, reduced the
 squared region-segment count from 10,628 to 7,437, and cut a controlled local
 end-to-end run from 182.7 s to 93.1 s while restoring the main-like 299-via
 topology. The accepted integration therefore enables partial routing only for
-60-350 routes, with both bounds configurable.
+100-350 routes, with both bounds configurable.

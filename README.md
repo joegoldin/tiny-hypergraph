@@ -69,7 +69,7 @@ The behavior can be tuned through `TinyHyperGraphSolverOptions`:
 ```ts
 const solver = new SelectiveReripTinyHyperGraphSolver(topology, problem, {
   PARTIAL_RIP_ENABLED: true,
-  PARTIAL_RIP_MIN_ROUTE_COUNT: 60,
+  PARTIAL_RIP_MIN_ROUTE_COUNT: 100,
   PARTIAL_RIP_MAX_ROUTE_COUNT: 350,
   PARTIAL_RIP_MAX_DISTANCE: 12,
   PARTIAL_RIP_QUALITY_MAX_DISTANCE: 24,
