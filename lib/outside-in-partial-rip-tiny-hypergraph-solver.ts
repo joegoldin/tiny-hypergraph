@@ -125,6 +125,9 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
   }
 
   protected override getRouteStartPortId(routeId: RouteId): PortId {
+    if (!this.PARTIAL_RIP_ENABLED) {
+      return super.getRouteStartPortId(routeId)
+    }
     return (
       this.partialRipRoutePlans.get(routeId)?.activeStartPortId ??
       super.getRouteStartPortId(routeId)
@@ -132,6 +135,9 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
   }
 
   protected override getRouteEndPortId(routeId: RouteId): PortId {
+    if (!this.PARTIAL_RIP_ENABLED) {
+      return super.getRouteEndPortId(routeId)
+    }
     return (
       this.partialRipRoutePlans.get(routeId)?.activeEndPortId ??
       super.getRouteEndPortId(routeId)
@@ -142,6 +148,9 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     routeId: RouteId,
     startingPortId: PortId,
   ): RegionId | undefined {
+    if (!this.PARTIAL_RIP_ENABLED) {
+      return super.getStartingNextRegionId(routeId, startingPortId)
+    }
     const partialRipRoutePlan = this.partialRipRoutePlans.get(routeId)
     if (
       partialRipRoutePlan &&
@@ -169,6 +178,9 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
   }
 
   override computeH(neighborPortId: PortId): number {
+    if (!this.PARTIAL_RIP_ENABLED) {
+      return super.computeH(neighborPortId)
+    }
     const routeId = this.state.currentRouteId
     if (routeId === undefined || !this.partialRipRoutePlans.has(routeId)) {
       return super.computeH(neighborPortId)
@@ -184,6 +196,10 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
   }
 
   override onPathFound(finalCandidate: Candidate): void {
+    if (!this.PARTIAL_RIP_ENABLED && !this.OUTSIDE_IN_ROUTING) {
+      super.onPathFound(finalCandidate)
+      return
+    }
     const routeId = this.state.currentRouteId
     const completedOutsideInRoute =
       routeId !== undefined && this.outsideInRouteSearch?.routeId === routeId
@@ -200,6 +216,10 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
   }
 
   override resetRoutingStateForRerip(): void {
+    if (!this.PARTIAL_RIP_ENABLED && !this.OUTSIDE_IN_ROUTING) {
+      super.resetRoutingStateForRerip()
+      return
+    }
     this.partialRipRoutePlans.clear()
     this.outsideInRouteSearch = undefined
     this.oneSidedFallbackRouteId = undefined

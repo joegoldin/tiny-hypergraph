@@ -318,3 +318,21 @@ outside-in/partial-rip tests, and `git diff --check` pass. The full suite runs
 104 passing assertions; its three image-test modules still fail to import the
 workspace's missing optional Sharp Darwin ARM64 binary before their assertions
 execute.
+
+## Trial 14 - zero-overhead compatibility path
+
+The first hosted SRJ21 run preserved completion, DRC, and routing output but
+reported a higher wall-clock P50 than the stored main run. Profiling the gated
+path showed that partial-rip bookkeeping was still performed on every completed
+route even when both partial rip and outside-in routing were disabled.
+
+Fast exits now bypass partial-plan map lookups and stats publication in
+`getRouteStartPortId`, `getRouteEndPortId`, `getStartingNextRegionId`,
+`computeH`, `onPathFound`, and `resetRoutingStateForRerip` when the feature is
+gated off. A controlled back-to-back SRJ21 run against the preceding commit
+kept the exact 10/10 completion and 9/10 DRC result while reducing aggregate
+runtime from 5.704 s to 5.374 s (1.06x) and improving the paired median by
+1.07x. Every one of the ten samples was faster.
+
+The package benchmark remained 8/8 solved with the same 1.739 average maximum
+region cost and completed in 20.632 s (4.63x faster than main's 95.441 s).
