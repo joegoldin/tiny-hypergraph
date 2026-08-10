@@ -1040,8 +1040,14 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
       this.RIP_THRESHOLD_RAMP_ATTEMPTS,
       this.PARTIAL_RIP_MAX_ATTEMPTS,
     )
+    const ripThresholdRampAttempts = Math.max(
+      0,
+      this.RIP_THRESHOLD_RAMP_ATTEMPTS,
+    )
     const ripThresholdProgress =
-      maxRipAttempts <= 0 ? 1 : Math.min(1, state.ripCount / maxRipAttempts)
+      ripThresholdRampAttempts <= 0
+        ? 1
+        : Math.min(1, state.ripCount / ripThresholdRampAttempts)
     const currentRipThreshold =
       this.RIP_THRESHOLD_START +
       (this.RIP_THRESHOLD_END - this.RIP_THRESHOLD_START) * ripThresholdProgress

@@ -171,6 +171,22 @@ test("the configured warmup performs a whole-graph rerip first", () => {
   expect(solver.stats.partialRipCount ?? 0).toBe(0)
 })
 
+test("the partial-rip cap does not compress the threshold ramp", () => {
+  const solver = createLinearSolver(24, {
+    RIP_THRESHOLD_START: 0.05,
+    RIP_THRESHOLD_END: 0.8,
+    RIP_THRESHOLD_RAMP_ATTEMPTS: 10,
+    PARTIAL_RIP_MAX_ATTEMPTS: 1,
+  })
+  solver.state.ripCount = 1
+  solver.state.regionIntersectionCaches[3]!.existingRegionCost = 1
+
+  solver.onAllRoutesRouted()
+
+  expect(solver.solved).toBe(true)
+  expect(solver.stats.currentRipThreshold).toBeCloseTo(0.125)
+})
+
 test("complexity-aware selection activates only at its route-count gate", () => {
   const belowGateSolver = createLinearSolver(24, {
     PARTIAL_RIP_MAX_ATTEMPTS: 0,
