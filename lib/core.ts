@@ -256,12 +256,27 @@ export interface TinyHyperGraphSolverOptions {
   GREEDY_FINAL_ROUTE_ITERS?: number
   /** Preserve route prefixes/suffixes and reopen only a bounded hot span. */
   PARTIAL_RIP_ENABLED?: boolean
+  /** Minimum route count required to enable partial-rip optimization. */
+  PARTIAL_RIP_MIN_ROUTE_COUNT?: number
   /** Maximum old-route distance reopened on either side of a hot segment. */
   PARTIAL_RIP_MAX_DISTANCE?: number
   /** Larger partial-rip window used when the initial solution is near target. */
   PARTIAL_RIP_QUALITY_MAX_DISTANCE?: number
   /** Maximum completed partial-rip rounds before restoring the best state. */
   PARTIAL_RIP_MAX_ATTEMPTS?: number
+  /** Whole-graph reseeds allowed before subsequent hot-region partial rips. */
+  PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS?: number
+  /**
+   * Minimum route count before route complexity may break region-cost ties
+   * inside the configured quality envelope.
+   */
+  PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT?: number
+  /** Stop after improving the initial max region cost by this fraction. */
+  PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO?: number
+  /** Max region-cost growth allowed while preferring a simpler route state. */
+  PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO?: number
+  /** Maximum total region-cost growth allowed for an early-stop candidate. */
+  PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO?: number
   /** Search from both active route ends instead of only the start end. */
   OUTSIDE_IN_ROUTING?: boolean
   /** Maximum geometric distance explored by either outside-in frontier. */
@@ -284,9 +299,15 @@ export interface TinyHyperGraphSolverOptionTarget {
   ACCEPT_BEST_SOLUTION_ON_TIMEOUT: boolean
   GREEDY_FINAL_ROUTE_ITERS: number
   PARTIAL_RIP_ENABLED?: boolean
+  PARTIAL_RIP_MIN_ROUTE_COUNT?: number
   PARTIAL_RIP_MAX_DISTANCE?: number
   PARTIAL_RIP_QUALITY_MAX_DISTANCE?: number
   PARTIAL_RIP_MAX_ATTEMPTS?: number
+  PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS?: number
+  PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT?: number
+  PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO?: number
+  PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO?: number
+  PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO?: number
   OUTSIDE_IN_ROUTING?: boolean
   OUTSIDE_IN_MAX_DISTANCE?: number
 }
@@ -347,6 +368,9 @@ export const applyTinyHyperGraphSolverOptions = (
   if (options.PARTIAL_RIP_ENABLED !== undefined) {
     solver.PARTIAL_RIP_ENABLED = options.PARTIAL_RIP_ENABLED
   }
+  if (options.PARTIAL_RIP_MIN_ROUTE_COUNT !== undefined) {
+    solver.PARTIAL_RIP_MIN_ROUTE_COUNT = options.PARTIAL_RIP_MIN_ROUTE_COUNT
+  }
   if (options.PARTIAL_RIP_MAX_DISTANCE !== undefined) {
     solver.PARTIAL_RIP_MAX_DISTANCE = options.PARTIAL_RIP_MAX_DISTANCE
   }
@@ -356,6 +380,26 @@ export const applyTinyHyperGraphSolverOptions = (
   }
   if (options.PARTIAL_RIP_MAX_ATTEMPTS !== undefined) {
     solver.PARTIAL_RIP_MAX_ATTEMPTS = options.PARTIAL_RIP_MAX_ATTEMPTS
+  }
+  if (options.PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS !== undefined) {
+    solver.PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS =
+      options.PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS
+  }
+  if (options.PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT !== undefined) {
+    solver.PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT =
+      options.PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT
+  }
+  if (options.PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO !== undefined) {
+    solver.PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO =
+      options.PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO
+  }
+  if (options.PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO !== undefined) {
+    solver.PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO =
+      options.PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO
+  }
+  if (options.PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO !== undefined) {
+    solver.PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO =
+      options.PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO
   }
   if (options.OUTSIDE_IN_ROUTING !== undefined) {
     solver.OUTSIDE_IN_ROUTING = options.OUTSIDE_IN_ROUTING
@@ -384,9 +428,20 @@ export const getTinyHyperGraphSolverOptions = (
   ACCEPT_BEST_SOLUTION_ON_TIMEOUT: solver.ACCEPT_BEST_SOLUTION_ON_TIMEOUT,
   GREEDY_FINAL_ROUTE_ITERS: solver.GREEDY_FINAL_ROUTE_ITERS,
   PARTIAL_RIP_ENABLED: solver.PARTIAL_RIP_ENABLED,
+  PARTIAL_RIP_MIN_ROUTE_COUNT: solver.PARTIAL_RIP_MIN_ROUTE_COUNT,
   PARTIAL_RIP_MAX_DISTANCE: solver.PARTIAL_RIP_MAX_DISTANCE,
   PARTIAL_RIP_QUALITY_MAX_DISTANCE: solver.PARTIAL_RIP_QUALITY_MAX_DISTANCE,
   PARTIAL_RIP_MAX_ATTEMPTS: solver.PARTIAL_RIP_MAX_ATTEMPTS,
+  PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS:
+    solver.PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS,
+  PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT:
+    solver.PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT,
+  PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO:
+    solver.PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO,
+  PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO:
+    solver.PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO,
+  PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO:
+    solver.PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO,
   OUTSIDE_IN_ROUTING: solver.OUTSIDE_IN_ROUTING,
   OUTSIDE_IN_MAX_DISTANCE: solver.OUTSIDE_IN_MAX_DISTANCE,
 })
@@ -435,9 +490,15 @@ export class TinyHyperGraphSolver extends BaseSolver {
   ACCEPT_BEST_SOLUTION_ON_TIMEOUT = true
   GREEDY_FINAL_ROUTE_ITERS = 4
   PARTIAL_RIP_ENABLED = false
+  PARTIAL_RIP_MIN_ROUTE_COUNT = 0
   PARTIAL_RIP_MAX_DISTANCE = 12
   PARTIAL_RIP_QUALITY_MAX_DISTANCE?: number
   PARTIAL_RIP_MAX_ATTEMPTS = Number.POSITIVE_INFINITY
+  PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS = 0
+  PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT = Number.POSITIVE_INFINITY
+  PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO = 0
+  PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO = 0.2
+  PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO = 0.1
   OUTSIDE_IN_ROUTING = false
   OUTSIDE_IN_MAX_DISTANCE = 24
 
@@ -1152,6 +1213,10 @@ export class TinyHyperGraphSolver extends BaseSolver {
       return
     }
 
+    this.replaceBestSolvedState(summary)
+  }
+
+  protected replaceBestSolvedState(summary: RegionCostSummary) {
     this.bestSolvedStateSummary = summary
     this.bestSolvedStateSnapshot = cloneSolvedStateSnapshot({
       portAssignment: this.state.portAssignment,

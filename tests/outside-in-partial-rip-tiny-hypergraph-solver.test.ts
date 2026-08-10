@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import {
   OutsideInPartialRipTinyHyperGraphSolver,
   type TinyHyperGraphProblem,
+  type TinyHyperGraphSolverOptions,
   type TinyHyperGraphTopology,
 } from "lib/index"
 import type { PortId, RegionId, RouteId } from "lib/types"
@@ -16,7 +17,11 @@ class TestOutsideInPartialRipSolver extends OutsideInPartialRipTinyHyperGraphSol
   }
 }
 
-const createLinearSolver = (outsideInMaxDistance = 24) => {
+const createLinearSolver = (
+  outsideInMaxDistance = 24,
+  options: TinyHyperGraphSolverOptions = {},
+  routeCount = 1,
+) => {
   const topology: TinyHyperGraphTopology = {
     portCount: 5,
     regionCount: 6,
@@ -39,11 +44,11 @@ const createLinearSolver = (outsideInMaxDistance = 24) => {
     portZ: new Int32Array(5),
   }
   const problem: TinyHyperGraphProblem = {
-    routeCount: 1,
+    routeCount,
     portSectionMask: new Int8Array(5).fill(1),
-    routeStartPort: new Int32Array([0]),
-    routeEndPort: new Int32Array([4]),
-    routeNet: new Int32Array([0]),
+    routeStartPort: new Int32Array(routeCount).fill(0),
+    routeEndPort: new Int32Array(routeCount).fill(4),
+    routeNet: new Int32Array(routeCount),
     regionNetId: new Int32Array(6).fill(-1),
   }
   const solver = new TestOutsideInPartialRipSolver(topology, problem, {
@@ -51,6 +56,7 @@ const createLinearSolver = (outsideInMaxDistance = 24) => {
     PARTIAL_RIP_MAX_ATTEMPTS: 1,
     OUTSIDE_IN_MAX_DISTANCE: outsideInMaxDistance,
     STATIC_REACHABILITY_PRECHECK: false,
+    ...options,
   })
 
   solver.state.portAssignment.fill(0)
@@ -127,4 +133,48 @@ test("a span beyond the two-frontier distance budget falls back safely", () => {
   expect(solver.failed).toBe(false)
   expect(solver.stats.outsideInFallbackRouteCount).toBe(1)
   expect(solver.state.regionSegments.flat()).toHaveLength(4)
+})
+
+test("small graphs bypass partial rip and outside-in routing", () => {
+  const solver = createLinearSolver(24, {
+    PARTIAL_RIP_MIN_ROUTE_COUNT: 2,
+  })
+
+  expect(solver.PARTIAL_RIP_ENABLED).toBe(false)
+  expect(solver.OUTSIDE_IN_ROUTING).toBe(false)
+})
+
+test("the configured warmup performs a whole-graph rerip first", () => {
+  const solver = createLinearSolver(24, {
+    PARTIAL_RIP_MAX_ATTEMPTS: 1,
+    PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS: 1,
+  })
+  solver.state.regionIntersectionCaches[3]!.existingRegionCost = 1
+
+  solver.onAllRoutesRouted()
+
+  expect(solver.state.ripCount).toBe(1)
+  expect(solver.stats.reripMode).toBe("warmup_full")
+  expect(solver.stats.partialRipCount ?? 0).toBe(0)
+})
+
+test("complexity-aware selection activates only at its route-count gate", () => {
+  const belowGateSolver = createLinearSolver(24, {
+    PARTIAL_RIP_MAX_ATTEMPTS: 0,
+    PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT: 100,
+  })
+  belowGateSolver.onAllRoutesRouted()
+
+  const atGateSolver = createLinearSolver(
+    24,
+    {
+      PARTIAL_RIP_MAX_ATTEMPTS: 0,
+      PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT: 100,
+    },
+    100,
+  )
+  atGateSolver.onAllRoutesRouted()
+
+  expect(belowGateSolver.stats.partialRipComplexityAwareSelection).toBe(false)
+  expect(atGateSolver.stats.partialRipComplexityAwareSelection).toBe(true)
 })

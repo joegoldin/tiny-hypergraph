@@ -227,3 +227,94 @@ Verification: `bun run typecheck`, `bun run build`, `git diff --check`, and all
 101 non-image-snapshot tests pass. As noted in Trial 8, the three remaining
 snapshot files cannot import their pre-existing optional Sharp native binary in
 this environment; they fail before any solver code runs.
+
+## Trial 10 - end-to-end topology canary and live-cache scoring
+
+The package benchmark alone hid an important downstream effect. On SRJ18
+sample005, the original implementation reduced solve-graph time from 8.08 s to
+1.58 s, but increased `HighDensitySolver` work from 27,363 to 53,632 iterations
+and end-to-end time from 26.58 s to 35.80 s.
+
+Diagnostics with zero, one, and two partial rounds all produced the same
+53,632-iteration detailed route. Removing canonical route-order cache replay
+and retaining the live candidate costs exposed a useful ten-round progression:
+
+- round 0: max cost 0.797, 1,129 segments;
+- round 1: max cost 0.923, 1,029 segments;
+- round 2: max cost 0.960, 992 segments;
+- round 3: max cost 0.766, 988 segments.
+
+The temporary cost valley is necessary. Restoring round three reduced the
+direct end-to-end canary to 15.78 s and solve-graph time to 1.17 s. Fixed caps
+were rejected because they also changed the rip-threshold ramp; candidate
+selection and stopping must remain separate.
+
+## Trial 11 - cross-dataset global reseed count
+
+SRJ19 samples 12,13,35,42,46,48,54,55,79,81,83,97,98,99,100 were used as a
+regression-heavy set with four workers and a deliberately short 90 s cap.
+
+- main: 12/15 complete, 0/15 relaxed DRC, 67.8 s solved-case P50;
+- partial only: 6/15 complete, 4/15 DRC, 25.5 s P50;
+- one whole-graph warmup then partial: 8/15 complete, 5/15 DRC, 23.8 s P50;
+- two whole-graph warmups then partial: 8/15 complete, 2/15 DRC, 25.1 s P50.
+
+One global warmup was accepted. It gives partial routing a different topology
+basin without repeatedly discarding every completed trace. A second warmup
+loses three DRC passes.
+
+## Trial 12 - density-aware candidate selection (rejected as a selector)
+
+Peak regional segment count and sum-of-squared regional segment count correlate
+with detailed-routing difficulty. A strict density guard recovered SRJ19
+sample083 at the 90 s cap, but changed sample079 from a 5.1 s DRC pass into a
+13.1 s DRC failure. Squared-density-first selection improved the SRJ19 stress
+set to 6/15 DRC and a 22.0 s P50, but reduced SRJ20 DRC.
+
+On the SRJ20 stress set (samples 6,10,13,14,20,28,29,30,35,38,41,53,62,63,75):
+
+- main: 11/15 complete, 3/15 DRC, 12.5 s P50;
+- region-cost-first partial routing: 11/15 complete, 5/15 DRC, 23.1 s P50;
+- squared-density-first full horizon: 11/15 complete, 3/15 DRC, 23.2 s P50.
+
+Density metrics remain in solver and benchmark telemetry, but final candidate
+selection is region-cost-first on medium graphs. The result is a 54.3% average
+max-cost improvement from the first completed SRJ20 solution (6.736 to 3.079).
+
+## Trial 13 - scale-aware policy and preloaded guard
+
+A single selection policy was not universal. The accepted integration uses
+three regimes:
+
+- fewer than 20 routes: use the established solver unchanged;
+- 20-99 routes: one global warmup, then ten bounded partial rounds, restoring
+  the best region-cost state;
+- at least 100 routes: allow segment count to break ties inside a 20% max-cost
+  and 10% total-cost envelope, with an optional 2% quality target.
+
+The large-graph mode reproduces the better SRJ18 downstream topology: all eight
+expected completion cases solve, 4/8 pass relaxed DRC, P50 is 24.4 s, and
+sample016 is recovered. Across those cases, max region cost improves 39.7% from
+the first completed state. On seven cases shared with main, every case is
+faster and the paired median is approximately 1.50x faster.
+
+Small dataset01 cases remain neutral. SRJ21 (8-16 routes) exactly reproduces
+main at 10/10 completion and 9/10 DRC. Representative SRJ23 preloaded cases also
+remain on the established behavior: serialized trace occupancy explicitly
+disables partial rip and outside-in reconnection.
+
+## Final cross-dataset verification
+
+Command: `./benchmark.sh`
+
+- Success: 8/8 cases, 2,001/2,001 routes.
+- Total completion time: 21.773 s (4.38x faster than main's 95.441 s).
+- Average maximum region cost: 1.739 (25.5% better than main's 2.333).
+- P50 duration: 1.611 s; P95 duration: 7.660 s.
+- Average solver iterations: 329,201.4 (75.4% fewer than main).
+
+Verification: `bun run typecheck`, `bun run build`, the seven focused
+outside-in/partial-rip tests, and `git diff --check` pass. The full suite runs
+104 passing assertions; its three image-test modules still fail to import the
+workspace's missing optional Sharp Darwin ARM64 binary before their assertions
+execute.

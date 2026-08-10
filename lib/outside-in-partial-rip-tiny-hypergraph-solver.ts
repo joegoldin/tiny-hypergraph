@@ -58,6 +58,13 @@ type IndexedCommittedRouteSegment = CommittedRouteSegment & {
   segmentIndex: number
 }
 
+type CompletedRoundSummary = RegionCostSummary & {
+  ripCount: number
+  segmentCount: number
+  maxRegionSegmentCount: number
+  squaredRegionSegmentCount: number
+}
+
 /**
  * Retains the two outside portions of a completed route and only reroutes a
  * bounded window around a congested region. The active window is represented
@@ -83,6 +90,12 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
   private outsideInForwardExpansionCount = 0
   private outsideInReverseExpansionCount = 0
   private outsideInDistancePruneCount = 0
+  private completedRoundSummaries: CompletedRoundSummary[] = []
+  private firstCompletedRoundSummary?: CompletedRoundSummary
+  private partialRipQualityBaselineSummary?: CompletedRoundSummary
+  private bestSolvedRoundSummary?: CompletedRoundSummary
+  private partialRipTargetReached = false
+  private useComplexityAwareSelection = false
 
   constructor(
     topology: TinyHyperGraphTopology,
@@ -102,6 +115,13 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     ) {
       this.PARTIAL_RIP_MAX_ATTEMPTS = 10
     }
+    if (problem.routeCount < Math.max(0, this.PARTIAL_RIP_MIN_ROUTE_COUNT)) {
+      this.PARTIAL_RIP_ENABLED = false
+      this.OUTSIDE_IN_ROUTING = false
+    }
+    this.useComplexityAwareSelection =
+      problem.routeCount >=
+      Math.max(0, this.PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT)
   }
 
   protected override getRouteStartPortId(routeId: RouteId): PortId {
@@ -951,40 +971,51 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     this.publishOutsideInStats()
   }
 
-  /**
-   * Serialization replays segments route-by-route. Keep the live cost cache in
-   * that same deterministic order before deciding whether a partial result is
-   * better. This also avoids the boundary-angle counter's legacy shared-port
-   * tie behavior producing a different score after round-tripping the output.
-   */
-  private rebuildIntersectionCachesInCanonicalRouteOrder(): void {
-    this.state.regionIntersectionCaches = Array.from(
-      { length: this.topology.regionCount },
-      () => createEmptyRegionIntersectionCache(),
-    )
-
-    for (
-      let regionId = 0;
-      regionId < this.state.regionSegments.length;
-      regionId++
-    ) {
-      const segments = this.state.regionSegments[regionId]!
-      segments.sort((left, right) => left[0] - right[0])
-      for (const [routeId, fromPortId, toPortId] of segments) {
-        this.state.currentRouteNetId = this.problem.routeNet[routeId]!
-        this.appendSegmentToRegionCache(regionId, fromPortId, toPortId)
-      }
+  private shouldReplaceBestSolvedState(
+    summary: CompletedRoundSummary,
+  ): boolean {
+    const bestSummary = this.bestSolvedRoundSummary
+    if (!bestSummary) return true
+    if (!this.useComplexityAwareSelection) {
+      return this.compareRegionCostSummaries(summary, bestSummary) < 0
     }
-    this.state.currentRouteNetId = undefined
+
+    const qualityBaseline = this.partialRipQualityBaselineSummary
+    if (!qualityBaseline) {
+      return this.compareRegionCostSummaries(summary, bestSummary) < 0
+    }
+
+    const maxRegionCostCeiling =
+      qualityBaseline.maxRegionCost *
+      (1 + Math.max(0, this.PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO))
+    const totalRegionCostCeiling =
+      qualityBaseline.totalRegionCost *
+      (1 + Math.max(0, this.PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO))
+    const isEligible =
+      summary.maxRegionCost <= maxRegionCostCeiling &&
+      summary.totalRegionCost <= totalRegionCostCeiling
+    const isBestEligible =
+      bestSummary.maxRegionCost <= maxRegionCostCeiling &&
+      bestSummary.totalRegionCost <= totalRegionCostCeiling
+
+    if (isEligible !== isBestEligible) return isEligible
+    if (isEligible && summary.segmentCount !== bestSummary.segmentCount) {
+      return summary.segmentCount < bestSummary.segmentCount
+    }
+    return this.compareRegionCostSummaries(summary, bestSummary) < 0
   }
 
   override onAllRoutesRouted(): void {
+    if (!this.PARTIAL_RIP_ENABLED) {
+      super.onAllRoutesRouted()
+      return
+    }
+
     const { state, topology } = this
     const maxRipAttempts = Math.min(
       this.RIP_THRESHOLD_RAMP_ATTEMPTS,
       this.PARTIAL_RIP_MAX_ATTEMPTS,
     )
-    this.rebuildIntersectionCachesInCanonicalRouteOrder()
     const ripThresholdProgress =
       maxRipAttempts <= 0 ? 1 : Math.min(1, state.ripCount / maxRipAttempts)
     const currentRipThreshold =
@@ -994,6 +1025,9 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     const hotRegionIds: RegionId[] = []
     let maxRegionCost = 0
     let totalRegionCost = 0
+    let segmentCount = 0
+    let maxRegionSegmentCount = 0
+    let squaredRegionSegmentCount = 0
 
     for (let regionId = 0; regionId < topology.regionCount; regionId++) {
       const regionCost =
@@ -1001,11 +1035,62 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
       regionCosts[regionId] = regionCost
       maxRegionCost = Math.max(maxRegionCost, regionCost)
       totalRegionCost += regionCost
+      const regionSegmentCount = state.regionSegments[regionId]?.length ?? 0
+      segmentCount += regionSegmentCount
+      maxRegionSegmentCount = Math.max(
+        maxRegionSegmentCount,
+        regionSegmentCount,
+      )
+      squaredRegionSegmentCount += regionSegmentCount * regionSegmentCount
       if (regionCost > currentRipThreshold) hotRegionIds.push(regionId)
     }
 
     const summary: RegionCostSummary = { maxRegionCost, totalRegionCost }
-    this.captureBestSolvedState(summary)
+    const completedRoundSummary: CompletedRoundSummary = {
+      ...summary,
+      ripCount: state.ripCount,
+      segmentCount,
+      maxRegionSegmentCount,
+      squaredRegionSegmentCount,
+    }
+    this.completedRoundSummaries.push(completedRoundSummary)
+    this.firstCompletedRoundSummary ??= completedRoundSummary
+    if (
+      this.partialRipQualityBaselineSummary === undefined &&
+      state.ripCount >= Math.max(0, this.PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS)
+    ) {
+      this.partialRipQualityBaselineSummary = completedRoundSummary
+    }
+    const shouldReplaceBest = this.shouldReplaceBestSolvedState(
+      completedRoundSummary,
+    )
+    if (shouldReplaceBest) {
+      this.replaceBestSolvedState(summary)
+      this.bestSolvedRoundSummary = completedRoundSummary
+    }
+
+    const firstRound = this.firstCompletedRoundSummary
+    const qualityBaseline = this.partialRipQualityBaselineSummary ?? firstRound
+    const targetImprovementRatio = Math.max(
+      0,
+      this.PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO,
+    )
+    const maxTotalCostGrowthRatio = Math.max(
+      0,
+      this.PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO,
+    )
+    const targetMaxRegionCost =
+      qualityBaseline.maxRegionCost * (1 - targetImprovementRatio)
+    const maxTargetTotalRegionCost =
+      qualityBaseline.totalRegionCost * (1 + maxTotalCostGrowthRatio)
+    const targetReached =
+      this.useComplexityAwareSelection &&
+      state.ripCount > qualityBaseline.ripCount &&
+      targetImprovementRatio > 0 &&
+      maxRegionCost <= targetMaxRegionCost &&
+      totalRegionCost <= maxTargetTotalRegionCost &&
+      segmentCount <= qualityBaseline.segmentCount
+    if (targetReached) this.partialRipTargetReached = true
     this.stats = {
       ...this.stats,
       currentRipThreshold,
@@ -1015,10 +1100,43 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
       bestMaxRegionCost: this.bestSolvedStateSummary?.maxRegionCost,
       bestTotalRegionCost: this.bestSolvedStateSummary?.totalRegionCost,
       ripCount: state.ripCount,
+      completedRoundSummaries: this.completedRoundSummaries.map(
+        (roundSummary) => ({ ...roundSummary }),
+      ),
+      firstMaxRegionCost: firstRound.maxRegionCost,
+      firstTotalRegionCost: firstRound.totalRegionCost,
+      firstSegmentCount: firstRound.segmentCount,
+      firstMaxRegionSegmentCount: firstRound.maxRegionSegmentCount,
+      firstSquaredRegionSegmentCount: firstRound.squaredRegionSegmentCount,
+      partialRipQualityBaselineRipCount: qualityBaseline.ripCount,
+      partialRipQualityBaselineMaxRegionCost: qualityBaseline.maxRegionCost,
+      partialRipQualityBaselineTotalRegionCost: qualityBaseline.totalRegionCost,
+      partialRipQualityBaselineSegmentCount: qualityBaseline.segmentCount,
+      partialRipQualityBaselineMaxRegionSegmentCount:
+        qualityBaseline.maxRegionSegmentCount,
+      partialRipQualityBaselineSquaredRegionSegmentCount:
+        qualityBaseline.squaredRegionSegmentCount,
+      bestSolvedSegmentCount: this.bestSolvedRoundSummary?.segmentCount,
+      bestSolvedMaxRegionSegmentCount:
+        this.bestSolvedRoundSummary?.maxRegionSegmentCount,
+      bestSolvedSquaredRegionSegmentCount:
+        this.bestSolvedRoundSummary?.squaredRegionSegmentCount,
+      partialRipTargetMaxRegionCost: targetMaxRegionCost,
+      partialRipMaxTargetTotalRegionCost: maxTargetTotalRegionCost,
+      partialRipComplexityAwareSelection: this.useComplexityAwareSelection,
+      partialRipComplexitySelectionMinRouteCount:
+        this.PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT,
+      partialRipMaxRegionCostGrowthRatio:
+        this.PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO,
+      partialRipTargetReached: this.partialRipTargetReached,
     }
     this.publishPartialRipStats()
 
-    if (hotRegionIds.length === 0 || state.ripCount >= maxRipAttempts) {
+    if (
+      hotRegionIds.length === 0 ||
+      targetReached ||
+      state.ripCount >= maxRipAttempts
+    ) {
       this.restoreBestSolvedState()
       this.solved = true
       return
@@ -1029,22 +1147,32 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
         regionCosts[regionId]! * this.RIP_CONGESTION_REGION_COST_FACTOR
     }
 
+    const usedWarmupFullRip =
+      state.ripCount < Math.max(0, this.PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS)
     state.ripCount += 1
-    const usedPartialRip = this.preparePartialRip(hotRegionIds, regionCosts)
+    const usedPartialRip =
+      !usedWarmupFullRip && this.preparePartialRip(hotRegionIds, regionCosts)
     if (!usedPartialRip) {
       this.resetRoutingStateForRerip()
     }
+    const reripMode = usedWarmupFullRip
+      ? "warmup_full"
+      : usedPartialRip
+        ? "partial"
+        : "full_fallback"
     this.stats = {
       ...this.stats,
       ripCount: state.ripCount,
       maxRegionCostBeforeRip: maxRegionCost,
       reripRegionCount: hotRegionIds.length,
-      reripMode: usedPartialRip ? "partial" : "full",
+      reripMode,
+      partialRipWarmupFullRipAttempts:
+        this.PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS,
     }
     this.logRipEvent("hot_regions", maxRegionCost, {
       hotRegionCount: hotRegionIds.length,
       currentRipThreshold,
-      reripMode: usedPartialRip ? "partial" : "full",
+      reripMode,
       partialRouteCount: usedPartialRip ? this.partialRipRoutePlans.size : 0,
     })
   }
