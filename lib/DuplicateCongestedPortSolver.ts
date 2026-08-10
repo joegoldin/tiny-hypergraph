@@ -17,6 +17,8 @@ export const DUPLICATE_PORT_PROXIMITY = 0.05
 export interface DuplicateCongestedPortSolverOptions {
   duplicatePortProximity?: number
   routeSolveOptions?: TinyHyperGraphSolverOptions
+  /** Ignore serialized port penalties while estimating shared-port use. */
+  useSerializedPortPenalties?: boolean
 }
 
 export interface DuplicatedPortSummary {
@@ -326,6 +328,9 @@ export class DuplicateCongestedPortSolver extends BaseSolver {
     const { topology, problem } = loadSerializedHyperGraph(
       this.serializedHyperGraph,
     )
+    if (this.options.useSerializedPortPenalties === false) {
+      problem.portPenalty = undefined
+    }
     const portUseCounts = new Map<string, number>()
 
     for (let routeId = 0; routeId < problem.routeCount; routeId++) {

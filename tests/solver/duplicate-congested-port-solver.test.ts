@@ -198,3 +198,24 @@ test("duplicate congested port solver duplicates independently reused ports in l
       .every((region) => region.pointIds.includes("shared-choke::dup1")),
   ).toBe(true)
 })
+
+test("duplicate congested port solver can preserve legacy port-use estimation", () => {
+  const graph = createDuplicatePortFixture()
+  const sharedChoke = graph.ports.find(
+    (port) => port.portId === "shared-choke",
+  )!
+  sharedChoke.d = {
+    ...sharedChoke.d,
+    tinyHypergraphPortPenalty: 1_000,
+  }
+
+  const penaltyAwareSolver = new DuplicateCongestedPortSolver(graph)
+  penaltyAwareSolver.solve()
+  const compatibilitySolver = new DuplicateCongestedPortSolver(graph, {
+    useSerializedPortPenalties: false,
+  })
+  compatibilitySolver.solve()
+
+  expect(penaltyAwareSolver.report.portUseCounts["shared-neighbor"]).toBe(2)
+  expect(compatibilitySolver.report.portUseCounts["shared-choke"]).toBe(2)
+})

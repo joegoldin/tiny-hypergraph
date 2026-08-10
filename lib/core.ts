@@ -254,6 +254,35 @@ export interface TinyHyperGraphSolverOptions {
   STATIC_REACHABILITY_PRECHECK_MAX_HOPS?: number
   ACCEPT_BEST_SOLUTION_ON_TIMEOUT?: boolean
   GREEDY_FINAL_ROUTE_ITERS?: number
+  /** Preserve route prefixes/suffixes and reopen only a bounded hot span. */
+  PARTIAL_RIP_ENABLED?: boolean
+  /** Minimum route count required to enable partial-rip optimization. */
+  PARTIAL_RIP_MIN_ROUTE_COUNT?: number
+  /** Maximum route count allowed to use partial-rip optimization. */
+  PARTIAL_RIP_MAX_ROUTE_COUNT?: number
+  /** Maximum old-route distance reopened on either side of a hot segment. */
+  PARTIAL_RIP_MAX_DISTANCE?: number
+  /** Larger partial-rip window used when the initial solution is near target. */
+  PARTIAL_RIP_QUALITY_MAX_DISTANCE?: number
+  /** Maximum completed partial-rip rounds before restoring the best state. */
+  PARTIAL_RIP_MAX_ATTEMPTS?: number
+  /** Whole-graph reseeds allowed before subsequent hot-region partial rips. */
+  PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS?: number
+  /**
+   * Minimum route count before route complexity may break region-cost ties
+   * inside the configured quality envelope.
+   */
+  PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT?: number
+  /** Stop after improving the initial max region cost by this fraction. */
+  PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO?: number
+  /** Max region-cost growth allowed while preferring a simpler route state. */
+  PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO?: number
+  /** Maximum total region-cost growth allowed for an early-stop candidate. */
+  PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO?: number
+  /** Search from both active route ends instead of only the start end. */
+  OUTSIDE_IN_ROUTING?: boolean
+  /** Maximum geometric distance explored by either outside-in frontier. */
+  OUTSIDE_IN_MAX_DISTANCE?: number
 }
 
 export interface TinyHyperGraphSolverOptionTarget {
@@ -271,6 +300,19 @@ export interface TinyHyperGraphSolverOptionTarget {
   STATIC_REACHABILITY_PRECHECK_MAX_HOPS: number
   ACCEPT_BEST_SOLUTION_ON_TIMEOUT: boolean
   GREEDY_FINAL_ROUTE_ITERS: number
+  PARTIAL_RIP_ENABLED?: boolean
+  PARTIAL_RIP_MIN_ROUTE_COUNT?: number
+  PARTIAL_RIP_MAX_ROUTE_COUNT?: number
+  PARTIAL_RIP_MAX_DISTANCE?: number
+  PARTIAL_RIP_QUALITY_MAX_DISTANCE?: number
+  PARTIAL_RIP_MAX_ATTEMPTS?: number
+  PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS?: number
+  PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT?: number
+  PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO?: number
+  PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO?: number
+  PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO?: number
+  OUTSIDE_IN_ROUTING?: boolean
+  OUTSIDE_IN_MAX_DISTANCE?: number
 }
 
 export const applyTinyHyperGraphSolverOptions = (
@@ -326,6 +368,51 @@ export const applyTinyHyperGraphSolverOptions = (
   if (options.GREEDY_FINAL_ROUTE_ITERS !== undefined) {
     solver.GREEDY_FINAL_ROUTE_ITERS = options.GREEDY_FINAL_ROUTE_ITERS
   }
+  if (options.PARTIAL_RIP_ENABLED !== undefined) {
+    solver.PARTIAL_RIP_ENABLED = options.PARTIAL_RIP_ENABLED
+  }
+  if (options.PARTIAL_RIP_MIN_ROUTE_COUNT !== undefined) {
+    solver.PARTIAL_RIP_MIN_ROUTE_COUNT = options.PARTIAL_RIP_MIN_ROUTE_COUNT
+  }
+  if (options.PARTIAL_RIP_MAX_ROUTE_COUNT !== undefined) {
+    solver.PARTIAL_RIP_MAX_ROUTE_COUNT = options.PARTIAL_RIP_MAX_ROUTE_COUNT
+  }
+  if (options.PARTIAL_RIP_MAX_DISTANCE !== undefined) {
+    solver.PARTIAL_RIP_MAX_DISTANCE = options.PARTIAL_RIP_MAX_DISTANCE
+  }
+  if (options.PARTIAL_RIP_QUALITY_MAX_DISTANCE !== undefined) {
+    solver.PARTIAL_RIP_QUALITY_MAX_DISTANCE =
+      options.PARTIAL_RIP_QUALITY_MAX_DISTANCE
+  }
+  if (options.PARTIAL_RIP_MAX_ATTEMPTS !== undefined) {
+    solver.PARTIAL_RIP_MAX_ATTEMPTS = options.PARTIAL_RIP_MAX_ATTEMPTS
+  }
+  if (options.PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS !== undefined) {
+    solver.PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS =
+      options.PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS
+  }
+  if (options.PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT !== undefined) {
+    solver.PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT =
+      options.PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT
+  }
+  if (options.PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO !== undefined) {
+    solver.PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO =
+      options.PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO
+  }
+  if (options.PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO !== undefined) {
+    solver.PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO =
+      options.PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO
+  }
+  if (options.PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO !== undefined) {
+    solver.PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO =
+      options.PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO
+  }
+  if (options.OUTSIDE_IN_ROUTING !== undefined) {
+    solver.OUTSIDE_IN_ROUTING = options.OUTSIDE_IN_ROUTING
+  }
+  if (options.OUTSIDE_IN_MAX_DISTANCE !== undefined) {
+    solver.OUTSIDE_IN_MAX_DISTANCE = options.OUTSIDE_IN_MAX_DISTANCE
+  }
 }
 
 export const getTinyHyperGraphSolverOptions = (
@@ -346,6 +433,24 @@ export const getTinyHyperGraphSolverOptions = (
     solver.STATIC_REACHABILITY_PRECHECK_MAX_HOPS,
   ACCEPT_BEST_SOLUTION_ON_TIMEOUT: solver.ACCEPT_BEST_SOLUTION_ON_TIMEOUT,
   GREEDY_FINAL_ROUTE_ITERS: solver.GREEDY_FINAL_ROUTE_ITERS,
+  PARTIAL_RIP_ENABLED: solver.PARTIAL_RIP_ENABLED,
+  PARTIAL_RIP_MIN_ROUTE_COUNT: solver.PARTIAL_RIP_MIN_ROUTE_COUNT,
+  PARTIAL_RIP_MAX_ROUTE_COUNT: solver.PARTIAL_RIP_MAX_ROUTE_COUNT,
+  PARTIAL_RIP_MAX_DISTANCE: solver.PARTIAL_RIP_MAX_DISTANCE,
+  PARTIAL_RIP_QUALITY_MAX_DISTANCE: solver.PARTIAL_RIP_QUALITY_MAX_DISTANCE,
+  PARTIAL_RIP_MAX_ATTEMPTS: solver.PARTIAL_RIP_MAX_ATTEMPTS,
+  PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS:
+    solver.PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS,
+  PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT:
+    solver.PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT,
+  PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO:
+    solver.PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO,
+  PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO:
+    solver.PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO,
+  PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO:
+    solver.PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO,
+  OUTSIDE_IN_ROUTING: solver.OUTSIDE_IN_ROUTING,
+  OUTSIDE_IN_MAX_DISTANCE: solver.OUTSIDE_IN_MAX_DISTANCE,
 })
 
 const compareCandidatesByF = (left: Candidate, right: Candidate) =>
@@ -391,6 +496,19 @@ export class TinyHyperGraphSolver extends BaseSolver {
   STATIC_REACHABILITY_PRECHECK_MAX_HOPS = 16
   ACCEPT_BEST_SOLUTION_ON_TIMEOUT = true
   GREEDY_FINAL_ROUTE_ITERS = 4
+  PARTIAL_RIP_ENABLED = false
+  PARTIAL_RIP_MIN_ROUTE_COUNT = 0
+  PARTIAL_RIP_MAX_ROUTE_COUNT = Number.POSITIVE_INFINITY
+  PARTIAL_RIP_MAX_DISTANCE = 12
+  PARTIAL_RIP_QUALITY_MAX_DISTANCE?: number
+  PARTIAL_RIP_MAX_ATTEMPTS = Number.POSITIVE_INFINITY
+  PARTIAL_RIP_WARMUP_FULL_RIP_ATTEMPTS = 0
+  PARTIAL_RIP_COMPLEXITY_SELECTION_MIN_ROUTE_COUNT = Number.POSITIVE_INFINITY
+  PARTIAL_RIP_TARGET_MAX_COST_IMPROVEMENT_RATIO = 0
+  PARTIAL_RIP_MAX_REGION_COST_GROWTH_RATIO = 0.2
+  PARTIAL_RIP_MAX_TOTAL_COST_GROWTH_RATIO = 0.1
+  OUTSIDE_IN_ROUTING = false
+  OUTSIDE_IN_MAX_DISTANCE = 24
 
   constructor(
     public topology: TinyHyperGraphTopology,
@@ -541,7 +659,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       this.routeAttemptCountByRouteId[state.currentRouteId!] += 1
 
       this.resetCandidateBestCosts()
-      const startingPortId = problem.routeStartPort[state.currentRouteId!]
+      const startingPortId = this.getRouteStartPortId(state.currentRouteId!)
       state.candidateQueue.clear()
       const startingNextRegionId = this.getStartingNextRegionId(
         state.currentRouteId!,
@@ -565,7 +683,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
         g: 0,
         h: 0,
       })
-      state.goalPortId = problem.routeEndPort[state.currentRouteId!]
+      state.goalPortId = this.getRouteEndPortId(state.currentRouteId!)
     }
 
     const currentCandidate = state.candidateQueue.dequeue()
@@ -719,6 +837,14 @@ export class TinyHyperGraphSolver extends BaseSolver {
       ) ??
       startingIncidentRegions[0]
     )
+  }
+
+  protected getRouteStartPortId(routeId: RouteId): PortId {
+    return this.problem.routeStartPort[routeId]!
+  }
+
+  protected getRouteEndPortId(routeId: RouteId): PortId {
+    return this.problem.routeEndPort[routeId]!
   }
 
   isPortReservedForDifferentNet(portId: PortId): boolean {
@@ -1095,6 +1221,10 @@ export class TinyHyperGraphSolver extends BaseSolver {
       return
     }
 
+    this.replaceBestSolvedState(summary)
+  }
+
+  protected replaceBestSolvedState(summary: RegionCostSummary) {
     this.bestSolvedStateSummary = summary
     this.bestSolvedStateSnapshot = cloneSolvedStateSnapshot({
       portAssignment: this.state.portAssignment,
@@ -1516,7 +1646,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       ]
     }
 
-    const endPortId = this.problem.routeEndPort[this.state.currentRouteId!]
+    const endPortId = this.getRouteEndPortId(this.state.currentRouteId!)
     const dx =
       this.topology.portX[neighborPortId] - this.topology.portX[endPortId]
     const dy =
