@@ -67,114 +67,57 @@ jobs:
         )
       )
     runs-on: ${{ vars.BENCHMARK_RUNNER || 'blacksmith-32vcpu-ubuntu-2404-arm' }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ github.event_name == 'issue_comment' && 120 || 60 }}
 
     steps:
+      - name: Checkout benchmark controller
+        if: github.event_name == 'issue_comment'
+        uses: actions/checkout@v4
+        with:
+          path: benchmark-controller
+          persist-credentials: false
+
       - name: Parse benchmark command
         id: parse
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.TSCIRCUIT_BOT_GITHUB_TOKEN || github.token }}
           script: |
-            const splitShellArgs = (input) => {
-              const args = []
-              let current = ''
-              let quote = null
-              let escaping = false
-              let tokenStarted = false
-
-              const pushCurrent = () => {
-                if (!tokenStarted) return
-                args.push(current)
-                current = ''
-                tokenStarted = false
-              }
-
-              for (const char of input) {
-                if (escaping) {
-                  if (quote === '"' && char === '\n') {
-                    escaping = false
-                    continue
-                  }
-                  if (quote === '"' && !['"', '\\', '$', '`'].includes(char)) {
-                    current += '\\'
-                  }
-                  current += char
-                  tokenStarted = true
-                  escaping = false
-                  continue
-                }
-
-                if (quote === "'") {
-                  if (char === "'") {
-                    quote = null
-                  } else {
-                    current += char
-                  }
-                  tokenStarted = true
-                  continue
-                }
-
-                if (quote === '"') {
-                  if (char === '"') {
-                    quote = null
-                  } else if (char === '\\') {
-                    escaping = true
-                  } else {
-                    current += char
-                  }
-                  tokenStarted = true
-                  continue
-                }
-
-                if (/\s/.test(char)) {
-                  pushCurrent()
-                  continue
-                }
-
-                if (char === "'" || char === '"') {
-                  quote = char
-                  tokenStarted = true
-                  continue
-                }
-
-                if (char === '\\') {
-                  escaping = true
-                  tokenStarted = true
-                  continue
-                }
-
-                current += char
-                tokenStarted = true
-              }
-
-              if (escaping) current += '\\'
-              if (quote !== null) throw new Error('Unterminated quote in /benchmark command')
-              pushCurrent()
-              return args
-            }
-
             let benchmarkArgs = []
             let ref = context.sha
             let statusCommentId = ''
+            let mainSha = ''
+            let prSha = ''
 
             if (context.eventName === 'issue_comment') {
-              const body = context.payload.comment.body.trim()
-              benchmarkArgs = splitShellArgs(body.replace(/^\/benchmark\b/, '').trim())
+              const { pathToFileURL } = require('node:url')
+              const parserUrl = pathToFileURL(
+                `${process.env.GITHUB_WORKSPACE}/benchmark-controller/scripts/benchmarking/pr-benchmark-command.js`,
+              ).href
+              const { parsePrBenchmarkCommand } = await import(parserUrl)
+              const command = parsePrBenchmarkCommand(context.payload.comment.body)
+              benchmarkArgs = command.benchmarkArgs
 
               const pr = await github.rest.pulls.get({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 pull_number: context.issue.number,
               })
-              ref = pr.data.head.sha
+              const main = await github.rest.repos.getBranch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: context.payload.repository.default_branch,
+              })
+              mainSha = main.data.commit.sha
+              prSha = pr.data.head.sha
+              ref = prSha
 
               try {
                 const statusComment = await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.issue.number,
-                  body: `## Tiny Hypergraph Benchmark\n\nRunning benchmark on \`${ref.slice(0, 7)}\`...\n\nWorkflow: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`,
+                  body: `## Tiny Hypergraph Same Machine Benchmark\n\nQueued current main \`${mainSha.slice(0, 7)}\` and PR head \`${prSha.slice(0, 7)}\`. Both revisions will run sequentially in this Blacksmith job.\n\nWorkflow: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`,
                 })
 
                 statusCommentId = String(statusComment.data.id)
@@ -208,12 +151,32 @@ jobs:
 
             core.setOutput('benchmark_args_json', JSON.stringify(benchmarkArgs))
             core.setOutput('ref', ref)
+            core.setOutput('main_sha', mainSha)
+            core.setOutput('pr_sha', prSha)
             core.setOutput('status_comment_id', statusCommentId)
 
       - name: Checkout code
+        if: github.event_name != 'issue_comment'
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.parse.outputs.ref }}
+          persist-credentials: false
+
+      - name: Checkout current main
+        if: github.event_name == 'issue_comment'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.parse.outputs.main_sha }}
+          path: same-machine-main
+          persist-credentials: false
+
+      - name: Checkout PR head
+        if: github.event_name == 'issue_comment'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.parse.outputs.pr_sha }}
+          path: same-machine-pr
+          persist-credentials: false
 
       - name: Setup bun
         uses: oven-sh/setup-bun@v2
@@ -221,9 +184,21 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
+        if: github.event_name != 'issue_comment'
+        run: bun install
+
+      - name: Install main dependencies
+        if: github.event_name == 'issue_comment'
+        working-directory: same-machine-main
+        run: bun install
+
+      - name: Install PR dependencies
+        if: github.event_name == 'issue_comment'
+        working-directory: same-machine-pr
         run: bun install
 
       - name: Run benchmark
+        if: github.event_name != 'issue_comment'
         env:
           BENCHMARK_ARGS_JSON: ${{ steps.parse.outputs.benchmark_args_json }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
@@ -318,30 +293,53 @@ jobs:
 
           exit "$STATUS"
 
-      - name: Download main branch benchmark result
-        if: always() && github.event_name == 'issue_comment'
+      - name: Run same-machine comparison
+        if: github.event_name == 'issue_comment'
         env:
-          GH_TOKEN: ${{ secrets.TSCIRCUIT_BOT_GITHUB_TOKEN || github.token }}
+          BENCHMARK_ARGS_JSON: ${{ steps.parse.outputs.benchmark_args_json }}
         run: |
-          RUN_ID=$(gh api "repos/${{ github.repository }}/actions/workflows/benchmark.yml/runs?branch=main&event=push&status=success&per_page=1" --jq '.workflow_runs[0].id' 2>/dev/null || echo "")
-          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
-            echo "(no main branch benchmark result available)" > benchmark-result-main.txt
-            echo "" > benchmark-result-main.json
-            exit 0
-          fi
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const { spawnSync } = require('node:child_process')
+          const args = JSON.parse(process.env.BENCHMARK_ARGS_JSON || '[]')
+          if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) {
+            throw new Error('BENCHMARK_ARGS_JSON must be a JSON array of strings')
+          }
 
-          gh run download "$RUN_ID" --repo "${{ github.repository }}" --name benchmark-result --dir ./main-artifact 2>/dev/null || true
-          if [ -f ./main-artifact/benchmark-result.txt ]; then
-            cp ./main-artifact/benchmark-result.txt benchmark-result-main.txt
-          else
-            echo "(no main branch benchmark result available)" > benchmark-result-main.txt
-          fi
+          const runRevision = (label) => {
+            const directory = `same-machine-${label}`
+            const outputDirectory = `same-machine-results/${label}`
+            fs.mkdirSync(outputDirectory, { recursive: true })
+            fs.chmodSync(path.join(directory, 'benchmark.sh'), 0o755)
+            const renderedArgs = args.map((arg) => JSON.stringify(arg)).join(' ')
+            console.log(`Running ${label}: ./benchmark.sh${renderedArgs ? ` ${renderedArgs}` : ''}`)
+            const result = spawnSync('./benchmark.sh', args, {
+              cwd: directory,
+              stdio: 'inherit',
+              env: process.env,
+            })
+            if (result.error) throw result.error
 
-          if [ -f ./main-artifact/benchmark-result.json ]; then
-            cp ./main-artifact/benchmark-result.json benchmark-result-main.json
-          else
-            echo "" > benchmark-result-main.json
-          fi
+            for (const extension of ['txt', 'json']) {
+              const source = path.join(directory, `benchmark-result.${extension}`)
+              if (!fs.existsSync(source)) continue
+              fs.copyFileSync(source, `benchmark-result-${label}.${extension}`)
+              fs.copyFileSync(source, path.join(outputDirectory, `benchmark-result.${extension}`))
+            }
+            const resultsDirectory = path.join(directory, 'results')
+            if (fs.existsSync(resultsDirectory)) {
+              fs.cpSync(resultsDirectory, path.join(outputDirectory, 'results'), {
+                recursive: true,
+              })
+            }
+            return result.status ?? 1
+          }
+
+          const mainStatus = runRevision('main')
+          const prStatus = runRevision('pr')
+          process.exit(mainStatus !== 0 ? mainStatus : prStatus)
+          NODE
 
       - name: Upload benchmark artifacts
         if: always()
@@ -355,6 +353,7 @@ jobs:
             benchmark-result-pr.json
             benchmark-result-main.txt
             benchmark-result-main.json
+            same-machine-results/**
             results/**
           if-no-files-found: ignore
 
@@ -367,6 +366,9 @@ jobs:
             const fs = require('node:fs')
             const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
             const jobStatus = '${{ job.status }}'
+            const mainSha = '${{ steps.parse.outputs.main_sha }}'
+            const prSha = '${{ steps.parse.outputs.pr_sha }}'
+            const runnerName = '${{ runner.name }}'
             const maxLength = 60000
 
             const readText = (path) =>
@@ -516,13 +518,13 @@ jobs:
 
             const getMissingMainMessage = (mainReport, prReport) => {
               const prDatasetName = prReport?.datasetName
-              if (!prDatasetName) return '(no main branch benchmark result available)'
+              if (!prDatasetName) return '(the paired benchmark did not produce a main report)'
               const reports = getBenchmarkReports(mainReport)
               if (reports.length === 0) {
-                return `(no main branch benchmark result available for dataset ${prDatasetName})`
+                return `(the same-machine main benchmark did not produce a report for dataset ${prDatasetName})`
               }
               const availableDatasets = reports.map((report) => report?.datasetName).filter(Boolean).join(', ')
-              return `(no cached main branch benchmark result for dataset ${prDatasetName}; cached datasets: ${availableDatasets || 'none'})`
+              return `(the same-machine main report did not match dataset ${prDatasetName}; available datasets: ${availableDatasets || 'none'})`
             }
 
             const mainText = readText('benchmark-result-main.txt')
@@ -534,11 +536,13 @@ jobs:
               ? mainText
               : getMissingMainMessage(rawMainReport, prReport)
             const title = jobStatus === 'success'
-              ? '## Tiny Hypergraph Benchmark Results'
-              : '## Tiny Hypergraph Benchmark Failed'
+              ? '## Tiny Hypergraph Same Machine Benchmark Results'
+              : '## Tiny Hypergraph Same Machine Benchmark Failed'
 
             const renderBody = (options = {}) => [
               title,
+              '',
+              `Main \`${mainSha.slice(0, 7)}\` and PR \`${prSha.slice(0, 7)}\` ran sequentially on \`${runnerName}\` with identical arguments.`,
               '',
               ...renderComparison(mainReport, prReport),
               '',
