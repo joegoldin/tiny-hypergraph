@@ -4,7 +4,6 @@ import {
   type TinyHyperGraphProblem,
   type TinyHyperGraphSolverOptions,
   type TinyHyperGraphTopology,
-  type TinyHyperGraphWorkingState,
 } from "./core"
 import { IndexedCandidateHeap } from "./indexed-candidate-heap"
 
@@ -22,29 +21,21 @@ export class DistanceAwareTinyHyperGraphSolver extends TinyHyperGraphSolver {
     options?: TinyHyperGraphSolverOptions,
   ) {
     super(topology, problem, options)
+    this.ADD_SEGMENT_DISTANCE_TO_G = true
   }
 
   override _setup(): void {
     super._setup()
     this.state.candidateQueue = new IndexedCandidateHeap(
       this.topology.regionCount,
-    ) as unknown as TinyHyperGraphWorkingState["candidateQueue"]
-  }
-
-  override computeG(
-    currentCandidate: Candidate,
-    neighborPortId: number,
-  ): number {
-    const baseCost = super.computeG(currentCandidate, neighborPortId)
-    if (!Number.isFinite(baseCost)) return baseCost
-
-    const dx =
-      this.topology.portX[currentCandidate.portId]! -
-      this.topology.portX[neighborPortId]!
-    const dy =
-      this.topology.portY[currentCandidate.portId]! -
-      this.topology.portY[neighborPortId]!
-    return baseCost + Math.hypot(dx, dy) * this.DISTANCE_TO_COST
+      {
+        hopCapacity: this.candidateHopCapacity,
+        hopSlotStride: this.candidateHopSlotStride,
+        firstRegionByPortId: this.candidateFirstRegionByPortId,
+        secondRegionByPortId: this.candidateSecondRegionByPortId,
+        incidentPortRegion: this.topology.incidentPortRegion,
+      },
+    )
   }
 
   override onPathFound(finalCandidate: Candidate): void {

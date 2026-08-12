@@ -5,6 +5,7 @@ import {
   type SerializedHyperGraphPortPointPathingSolverInput,
 } from "lib/compat/convertPortPointPathingSolverInputToSerializedHyperGraph"
 import { loadSerializedHyperGraph } from "lib/compat/loadSerializedHyperGraph"
+import { TinyHyperGraphSolver } from "lib/core"
 import { ddr5Pipeline7PortPointPathingInput } from "tiny-hypergraph-repros"
 
 const TINY_TERMINAL_REGION_SIZE = 1e-6
@@ -140,7 +141,7 @@ const addConnectionTerminalPorts = (
   }
 }
 
-test("repro: DDR5 pipeline7 port-point-pathing input implies multi-GB dense hop state", () => {
+test("repro: DDR5 pipeline7 uses compact legal-hop candidate state", () => {
   const input = getSinglePortPointPathingSolverParams(
     ddr5Pipeline7PortPointPathingInput as SerializedHyperGraphPortPointPathingSolverInput,
   )
@@ -152,9 +153,20 @@ test("repro: DDR5 pipeline7 port-point-pathing input implies multi-GB dense hop 
   const { topology, problem } = loadSerializedHyperGraph(graph)
   const denseHopCount = topology.portCount * topology.regionCount
   const denseHopBytes = denseHopCount * (8 + 4)
+  const maxPortIncidence = Math.max(
+    1,
+    ...topology.incidentPortRegion.map((regionIds) => regionIds.length),
+  )
+  const compactHopCount = topology.portCount * maxPortIncidence
+  const compactHopBytes = compactHopCount * (8 + 4)
+  const solver = new TinyHyperGraphSolver(topology, problem, {
+    STATIC_REACHABILITY_PRECHECK: false,
+  })
 
   expect({
     boardName: "DDR5",
+    compactHopBytes,
+    compactHopCount,
     source: "SRG 18 pipeline 7 circuit 6",
     regionCount: topology.regionCount,
     portCount: topology.portCount,
@@ -164,6 +176,8 @@ test("repro: DDR5 pipeline7 port-point-pathing input implies multi-GB dense hop 
   }).toMatchInlineSnapshot(`
     {
       "boardName": "DDR5",
+      "compactHopBytes": 662328,
+      "compactHopCount": 55194,
       "denseHopBytes": 4209756768,
       "denseHopCount": 350813064,
       "portCount": 27597,
@@ -176,7 +190,9 @@ test("repro: DDR5 pipeline7 port-point-pathing input implies multi-GB dense hop 
   expect(topology.regionCount).toBeGreaterThan(12_000)
   expect(topology.portCount).toBeGreaterThan(27_000)
   expect(denseHopBytes).toBeGreaterThan(4_000_000_000)
-
-  // Do not construct TinyHyperGraphSolver in this repro: current construction
-  // attempts to allocate dense hop state at this size, which is the crash.
+  expect(compactHopBytes).toBeLessThan(1_000_000)
+  expect(solver.state.candidateBestCostByHopId).toHaveLength(compactHopCount)
+  expect(solver.state.candidateBestCostGenerationByHopId).toHaveLength(
+    compactHopCount,
+  )
 })

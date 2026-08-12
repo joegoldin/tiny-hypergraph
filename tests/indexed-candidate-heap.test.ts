@@ -39,3 +39,35 @@ test("keeps the lowest-cost queued directed hop and closes dequeued hops", () =>
   heap.queue(secondHop)
   expect(heap.toArray()).toEqual([secondHop])
 })
+
+test("uses compact generation-scoped hop state when topology slots are provided", () => {
+  const heap = new IndexedCandidateHeap(20, {
+    hopCapacity: 6,
+    hopSlotStride: 2,
+    firstRegionByPortId: Int32Array.from([1, 3, 5]),
+    secondRegionByPortId: Int32Array.from([2, 4, 6]),
+    incidentPortRegion: [
+      [1, 2],
+      [3, 4],
+      [5, 6],
+    ],
+  })
+  const first = candidate({ portId: 1, nextRegionId: 3, g: 5, f: 5 })
+  const replacement = candidate({ portId: 1, nextRegionId: 3, g: 2, f: 2 })
+  const second = candidate({ portId: 2, nextRegionId: 6, g: 3, f: 3 })
+
+  heap.queue(first)
+  heap.queue(replacement)
+  heap.queue(second)
+
+  expect(heap.length).toBe(2)
+  expect(heap.dequeue()).toBe(replacement)
+  expect(heap.isClosedHop(1, 3)).toBe(true)
+  heap.queue(candidate({ portId: 1, nextRegionId: 3, g: 1, f: 1 }))
+  expect(heap.dequeue()).toBe(second)
+
+  heap.clear()
+  expect(heap.isClosedHop(1, 3)).toBe(false)
+  heap.queue(first)
+  expect(heap.dequeue()).toBe(first)
+})

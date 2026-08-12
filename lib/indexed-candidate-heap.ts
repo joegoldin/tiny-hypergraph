@@ -1,4 +1,13 @@
 import type { Candidate } from "./core"
+import type { RegionId } from "./types"
+
+export interface CompactCandidateHopIndex {
+  hopCapacity: number
+  hopSlotStride: number
+  firstRegionByPortId: Int32Array
+  secondRegionByPortId: Int32Array
+  incidentPortRegion: RegionId[][]
+}
 
 /**
  * Candidate queue keyed by the directed hop represented by a candidate.
@@ -11,8 +20,19 @@ export class IndexedCandidateHeap {
   private items: Candidate[] = []
   private indexByHopId = new Map<number, number>()
   private closedHopIds = new Set<number>()
+  private hopStateGeneration?: Uint32Array
+  private hopIndexOrClosed?: Int32Array
+  private currentHopStateGeneration = 1
 
-  constructor(private readonly regionCount: number) {}
+  constructor(
+    private readonly regionCount: number,
+    private readonly compactHopIndex?: CompactCandidateHopIndex,
+  ) {
+    if (compactHopIndex) {
+      this.hopStateGeneration = new Uint32Array(compactHopIndex.hopCapacity)
+      this.hopIndexOrClosed = new Int32Array(compactHopIndex.hopCapacity)
+    }
+  }
 
   get length(): number {
     return this.items.length
@@ -26,13 +46,25 @@ export class IndexedCandidateHeap {
     this.items.length = 0
     this.indexByHopId.clear()
     this.closedHopIds.clear()
+    if (!this.hopStateGeneration) return
+
+    if (this.currentHopStateGeneration === 0xffffffff) {
+      this.hopStateGeneration.fill(0)
+      this.currentHopStateGeneration = 1
+    } else {
+      this.currentHopStateGeneration += 1
+    }
+  }
+
+  isClosedHop(portId: number, nextRegionId: number): boolean {
+    return this.isHopClosed(this.getHopIdFromValues(portId, nextRegionId))
   }
 
   queue(candidate: Candidate): void {
     const hopId = this.getHopId(candidate)
-    if (this.closedHopIds.has(hopId)) return
+    if (this.isHopClosed(hopId)) return
 
-    const existingIndex = this.indexByHopId.get(hopId)
+    const existingIndex = this.getQueuedHopIndex(hopId)
     if (existingIndex !== undefined) {
       const existingCandidate = this.items[existingIndex]!
       if (candidate.g >= existingCandidate.g) return
@@ -48,7 +80,6 @@ export class IndexedCandidateHeap {
 
     const index = this.items.length
     this.items.push(candidate)
-    this.indexByHopId.set(hopId, index)
     this.siftUp(index)
   }
 
@@ -57,45 +88,101 @@ export class IndexedCandidateHeap {
     if (!bestCandidate) return undefined
 
     const bestHopId = this.getHopId(bestCandidate)
-    this.closedHopIds.add(bestHopId)
-    this.indexByHopId.delete(bestHopId)
+    this.closeHop(bestHopId)
 
     const lastCandidate = this.items.pop()!
     if (this.items.length > 0) {
       this.items[0] = lastCandidate
-      this.indexByHopId.set(this.getHopId(lastCandidate), 0)
       this.siftDown(0)
     }
     return bestCandidate
   }
 
   private getHopId(candidate: Candidate): number {
-    return candidate.portId * this.regionCount + candidate.nextRegionId
+    return this.getHopIdFromValues(candidate.portId, candidate.nextRegionId)
   }
 
-  private swap(leftIndex: number, rightIndex: number): void {
-    const leftCandidate = this.items[leftIndex]!
-    this.items[leftIndex] = this.items[rightIndex]!
-    this.items[rightIndex] = leftCandidate
-    this.indexByHopId.set(this.getHopId(this.items[leftIndex]!), leftIndex)
-    this.indexByHopId.set(this.getHopId(this.items[rightIndex]!), rightIndex)
+  private getHopIdFromValues(portId: number, nextRegionId: number): number {
+    const compactHopIndex = this.compactHopIndex
+    if (!compactHopIndex) return portId * this.regionCount + nextRegionId
+
+    const baseHopId = portId * compactHopIndex.hopSlotStride
+    if (compactHopIndex.firstRegionByPortId[portId] === nextRegionId) {
+      return baseHopId
+    }
+    if (compactHopIndex.secondRegionByPortId[portId] === nextRegionId) {
+      return baseHopId + 1
+    }
+
+    const incidentRegionIds = compactHopIndex.incidentPortRegion[portId]
+    for (let slot = 2; slot < (incidentRegionIds?.length ?? 0); slot++) {
+      if (incidentRegionIds![slot] === nextRegionId) return baseHopId + slot
+    }
+
+    return -(portId * this.regionCount + nextRegionId) - 1
+  }
+
+  private getQueuedHopIndex(hopId: number): number | undefined {
+    if (
+      hopId >= 0 &&
+      this.hopStateGeneration?.[hopId] === this.currentHopStateGeneration
+    ) {
+      const index = this.hopIndexOrClosed![hopId]!
+      return index >= 0 ? index : undefined
+    }
+    return this.indexByHopId.get(hopId)
+  }
+
+  private isHopClosed(hopId: number): boolean {
+    if (
+      hopId >= 0 &&
+      this.hopStateGeneration?.[hopId] === this.currentHopStateGeneration
+    ) {
+      return this.hopIndexOrClosed![hopId] === -1
+    }
+    return this.closedHopIds.has(hopId)
+  }
+
+  private setQueuedHopIndex(hopId: number, index: number): void {
+    if (hopId >= 0 && this.hopStateGeneration) {
+      this.hopStateGeneration[hopId] = this.currentHopStateGeneration
+      this.hopIndexOrClosed![hopId] = index
+      return
+    }
+    this.indexByHopId.set(hopId, index)
+  }
+
+  private closeHop(hopId: number): void {
+    if (hopId >= 0 && this.hopStateGeneration) {
+      this.hopStateGeneration[hopId] = this.currentHopStateGeneration
+      this.hopIndexOrClosed![hopId] = -1
+      return
+    }
+    this.indexByHopId.delete(hopId)
+    this.closedHopIds.add(hopId)
   }
 
   private siftUp(startIndex: number): void {
+    const candidate = this.items[startIndex]!
     let index = startIndex
     while (index > 0) {
       const parentIndex = (index - 1) >> 1
-      if (this.items[parentIndex]!.f <= this.items[index]!.f) return
-      this.swap(index, parentIndex)
+      const parent = this.items[parentIndex]!
+      if (parent.f <= candidate.f) break
+      this.items[index] = parent
+      this.setQueuedHopIndex(this.getHopId(parent), index)
       index = parentIndex
     }
+    this.items[index] = candidate
+    this.setQueuedHopIndex(this.getHopId(candidate), index)
   }
 
   private siftDown(startIndex: number): void {
+    const candidate = this.items[startIndex]!
     let index = startIndex
     while (true) {
       const leftChildIndex = index * 2 + 1
-      if (leftChildIndex >= this.items.length) return
+      if (leftChildIndex >= this.items.length) break
 
       const rightChildIndex = leftChildIndex + 1
       const smallestChildIndex =
@@ -103,9 +190,13 @@ export class IndexedCandidateHeap {
         this.items[rightChildIndex]!.f < this.items[leftChildIndex]!.f
           ? rightChildIndex
           : leftChildIndex
-      if (this.items[index]!.f <= this.items[smallestChildIndex]!.f) return
-      this.swap(index, smallestChildIndex)
+      const smallestChild = this.items[smallestChildIndex]!
+      if (candidate.f <= smallestChild.f) break
+      this.items[index] = smallestChild
+      this.setQueuedHopIndex(this.getHopId(smallestChild), index)
       index = smallestChildIndex
     }
+    this.items[index] = candidate
+    this.setQueuedHopIndex(this.getHopId(candidate), index)
   }
 }
