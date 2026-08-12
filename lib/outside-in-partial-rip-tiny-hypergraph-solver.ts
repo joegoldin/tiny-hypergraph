@@ -190,11 +190,12 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     }
 
     const endPortId = this.getRouteEndPortId(routeId)
-    const dx =
-      this.topology.portX[neighborPortId]! - this.topology.portX[endPortId]!
-    const dy =
-      this.topology.portY[neighborPortId]! - this.topology.portY[endPortId]!
-    return Math.sqrt(dx * dx + dy * dy) * this.DISTANCE_TO_COST
+    return (
+      Math.hypot(
+        this.topology.portX[neighborPortId]! - this.topology.portX[endPortId]!,
+        this.topology.portY[neighborPortId]! - this.topology.portY[endPortId]!,
+      ) * this.DISTANCE_TO_COST
+    )
   }
 
   override onPathFound(finalCandidate: Candidate): void {
@@ -234,11 +235,10 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     }
   }
 
-  private indexCommittedRouteSegmentsByRouteId(): IndexedCommittedRouteSegment[][] {
-    const indexedSegmentsByRouteId = Array.from(
-      { length: this.problem.routeCount },
-      () => [] as IndexedCommittedRouteSegment[],
-    )
+  private getCommittedRouteSegments(
+    routeId: RouteId,
+  ): CommittedRouteSegment[] | undefined {
+    const indexedSegments: IndexedCommittedRouteSegment[] = []
     for (
       let regionId = 0;
       regionId < this.state.regionSegments.length;
@@ -246,8 +246,7 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     ) {
       for (const [segmentRouteId, fromPortId, toPortId] of this.state
         .regionSegments[regionId] ?? []) {
-        const indexedSegments = indexedSegmentsByRouteId[segmentRouteId]
-        if (!indexedSegments) continue
+        if (segmentRouteId !== routeId) continue
         indexedSegments.push({
           segmentIndex: indexedSegments.length,
           regionId,
@@ -257,13 +256,6 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
       }
     }
 
-    return indexedSegmentsByRouteId
-  }
-
-  private getCommittedRouteSegments(
-    routeId: RouteId,
-    indexedSegments: IndexedCommittedRouteSegment[],
-  ): CommittedRouteSegment[] | undefined {
     if (indexedSegments.length === 0) return undefined
 
     const segmentIndicesByPortId = new Map<PortId, number[]>()
@@ -321,13 +313,12 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
   }
 
   private getSegmentDistance(segment: CommittedRouteSegment): number {
-    const dx =
+    return Math.hypot(
       this.topology.portX[segment.fromPortId]! -
-      this.topology.portX[segment.toPortId]!
-    const dy =
+        this.topology.portX[segment.toPortId]!,
       this.topology.portY[segment.fromPortId]! -
-      this.topology.portY[segment.toPortId]!
-    return Math.sqrt(dx * dx + dy * dy)
+        this.topology.portY[segment.toPortId]!,
+    )
   }
 
   private getPartialRipWindow(
@@ -437,16 +428,12 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
       { length: this.topology.regionCount },
       () => [] as [RouteId, PortId, PortId][],
     )
-    const indexedSegmentsByRouteId = this.indexCommittedRouteSegmentsByRouteId()
     const nextPlans = new Map<RouteId, PartialRipRoutePlan>()
     let rippedSegmentCount = 0
     let retainedSegmentCount = 0
 
     for (let routeId = 0; routeId < this.problem.routeCount; routeId++) {
-      const orderedSegments = this.getCommittedRouteSegments(
-        routeId,
-        indexedSegmentsByRouteId[routeId]!,
-      )
+      const orderedSegments = this.getCommittedRouteSegments(routeId)
       if (!orderedSegments) return false
 
       if (!routeIdsTouchingHotRegions.has(routeId)) {
@@ -599,11 +586,11 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     const queue = new MinHeap<OutsideInCandidate>([], (left, right) =>
       left.f === right.f ? left.g - right.g : left.f - right.f,
     )
-    const dx =
-      this.topology.portX[startPortId]! - this.topology.portX[targetPortId]!
-    const dy =
-      this.topology.portY[startPortId]! - this.topology.portY[targetPortId]!
-    const h = Math.sqrt(dx * dx + dy * dy) * this.DISTANCE_TO_COST
+    const h =
+      Math.hypot(
+        this.topology.portX[startPortId]! - this.topology.portX[targetPortId]!,
+        this.topology.portY[startPortId]! - this.topology.portY[targetPortId]!,
+      ) * this.DISTANCE_TO_COST
     const root: OutsideInCandidate = {
       portId: startPortId,
       nextRegionId: startRegionId,
@@ -708,20 +695,16 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     const regionIds = forwardPath
       .slice(0, -1)
       .map(({ nextRegionId }) => nextRegionId)
-    let connectorCost = 0
 
     if (forwardCandidate.portId !== reverseCandidate.portId) {
       if (forwardCandidate.nextRegionId !== reverseCandidate.nextRegionId) {
         return undefined
       }
-      const connectorDx =
+      const connectorDistance = Math.hypot(
         this.topology.portX[forwardCandidate.portId]! -
-        this.topology.portX[reverseCandidate.portId]!
-      const connectorDy =
+          this.topology.portX[reverseCandidate.portId]!,
         this.topology.portY[forwardCandidate.portId]! -
-        this.topology.portY[reverseCandidate.portId]!
-      const connectorDistance = Math.sqrt(
-        connectorDx * connectorDx + connectorDy * connectorDy,
+          this.topology.portY[reverseCandidate.portId]!,
       )
       if (
         forwardCandidate.travelDistance +
@@ -734,12 +717,8 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
       const connectorG = this.computeG(
         forwardCandidate,
         reverseCandidate.portId,
-        undefined,
-        undefined,
-        connectorDistance,
       )
       if (!Number.isFinite(connectorG)) return undefined
-      connectorCost = connectorG - forwardCandidate.g
       regionIds.push(forwardCandidate.nextRegionId)
       portIds.push(reverseCandidate.portId)
     }
@@ -779,6 +758,12 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
         h: 0,
       }
     }
+
+    const connectorCost =
+      forwardCandidate.portId === reverseCandidate.portId
+        ? 0
+        : this.computeG(forwardCandidate, reverseCandidate.portId) -
+          forwardCandidate.g
 
     return {
       candidate: joinedCandidate,
@@ -837,41 +822,27 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     const frontier = expandingForward ? search.forward : search.reverse
     const candidate = this.dequeueFreshCandidate(frontier)
     if (!candidate) return false
-    const currentRouteNetId = this.state.currentRouteNetId!
-    const portEndpointReservationNetId =
-      this.problemSetup.portEndpointReservationNetId
-    const regionNetId = this.problem.regionNetId
 
     if (expandingForward) this.outsideInForwardExpansionCount += 1
     else this.outsideInReverseExpansionCount += 1
 
-    if (
-      regionNetId[candidate.nextRegionId] !== -1 &&
-      regionNetId[candidate.nextRegionId] !== currentRouteNetId
-    ) {
+    if (this.isRegionReservedForDifferentNet(candidate.nextRegionId)) {
       return true
     }
 
     this.recordSettledCandidate(frontier, candidate)
     this.considerOutsideInJoins(candidate, expandingForward)
-    const currentPortAngle = this.getPortAngleForRegion(
-      candidate.portId,
-      candidate.nextRegionId,
-    )
 
     for (const neighborPortId of this.topology.regionIncidentPorts[
       candidate.nextRegionId
     ] ?? []) {
       if (neighborPortId === candidate.portId) continue
-      const reservedNetId = portEndpointReservationNetId[neighborPortId]!
-      if (
-        reservedNetId === -2 ||
-        (reservedNetId !== -1 && reservedNetId !== currentRouteNetId)
-      ) {
-        continue
-      }
+      if (this.isPortReservedForDifferentNet(neighborPortId)) continue
       const assignedNetId = this.state.portAssignment[neighborPortId]!
-      if (assignedNetId !== -1 && assignedNetId !== currentRouteNetId) {
+      if (
+        assignedNetId !== -1 &&
+        assignedNetId !== this.state.currentRouteNetId
+      ) {
         continue
       }
       if (
@@ -881,14 +852,11 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
         continue
       }
 
-      const segmentDx =
+      const segmentDistance = Math.hypot(
         this.topology.portX[candidate.portId]! -
-        this.topology.portX[neighborPortId]!
-      const segmentDy =
+          this.topology.portX[neighborPortId]!,
         this.topology.portY[candidate.portId]! -
-        this.topology.portY[neighborPortId]!
-      const segmentDistance = Math.sqrt(
-        segmentDx * segmentDx + segmentDy * segmentDy,
+          this.topology.portY[neighborPortId]!,
       )
       const travelDistance = candidate.travelDistance + segmentDistance
       if (travelDistance > this.OUTSIDE_IN_MAX_DISTANCE) {
@@ -897,47 +865,30 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
         continue
       }
 
-      const neighborIncidentRegions =
-        this.topology.incidentPortRegion[neighborPortId] ?? []
+      const g = this.computeG(candidate, neighborPortId)
+      if (!Number.isFinite(g)) continue
       const nextRegionId =
-        neighborIncidentRegions[0] === candidate.nextRegionId
-          ? neighborIncidentRegions[1]
-          : neighborIncidentRegions[0]
+        this.topology.incidentPortRegion[neighborPortId]?.[0] ===
+        candidate.nextRegionId
+          ? this.topology.incidentPortRegion[neighborPortId]?.[1]
+          : this.topology.incidentPortRegion[neighborPortId]?.[0]
       if (
         nextRegionId === undefined ||
-        (regionNetId[nextRegionId] !== -1 &&
-          regionNetId[nextRegionId] !== currentRouteNetId)
+        this.isRegionReservedForDifferentNet(nextRegionId)
       ) {
         continue
       }
-      const useNeighborAngleForRegion1 =
-        neighborIncidentRegions[0] === candidate.nextRegionId ||
-        neighborIncidentRegions[1] !== candidate.nextRegionId
-      const neighborPortAngle = useNeighborAngleForRegion1
-        ? this.topology.portAngleForRegion1[neighborPortId]
-        : (this.topology.portAngleForRegion2?.[neighborPortId] ??
-          this.topology.portAngleForRegion1[neighborPortId])
-      const g = this.computeG(
-        candidate,
-        neighborPortId,
-        currentPortAngle,
-        neighborPortAngle,
-        segmentDistance,
-      )
-      if (!Number.isFinite(g)) continue
 
       const hopId = this.getHopId(neighborPortId, nextRegionId)
       if (g >= (frontier.bestCostByHopId.get(hopId) ?? Infinity)) continue
       frontier.bestCostByHopId.set(hopId, g)
-      const targetDx =
-        this.topology.portX[neighborPortId]! -
-        this.topology.portX[frontier.targetPortId]!
-      const targetDy =
-        this.topology.portY[neighborPortId]! -
-        this.topology.portY[frontier.targetPortId]!
       const h =
-        Math.sqrt(targetDx * targetDx + targetDy * targetDy) *
-        this.DISTANCE_TO_COST
+        Math.hypot(
+          this.topology.portX[neighborPortId]! -
+            this.topology.portX[frontier.targetPortId]!,
+          this.topology.portY[neighborPortId]! -
+            this.topology.portY[frontier.targetPortId]!,
+        ) * this.DISTANCE_TO_COST
       frontier.queue.queue({
         portId: neighborPortId,
         prevRegionId: candidate.nextRegionId,
