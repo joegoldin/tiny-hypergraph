@@ -29,7 +29,7 @@ jobs:
               '```',
               '',
               'Everything after `/benchmark` is forwarded directly to `./benchmark.sh`.',
-              'The result comment shows the matching dataset from the latest stored main-branch benchmark artifact beside the PR run; main is not rerun for each PR benchmark request.',
+              'Every command runs current main and the PR head sequentially on the same Blacksmith machine, then reports their results side by side.',
               '',
               'Examples:',
               '- `/benchmark` -> all committed completed SRJ18 Pipeline7 cases, core solver',
