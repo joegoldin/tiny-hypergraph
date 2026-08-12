@@ -28,10 +28,6 @@ export class IndexedCandidateHeap {
     this.closedHopIds.clear()
   }
 
-  isClosedHop(portId: number, nextRegionId: number): boolean {
-    return this.closedHopIds.has(portId * this.regionCount + nextRegionId)
-  }
-
   queue(candidate: Candidate): void {
     const hopId = this.getHopId(candidate)
     if (this.closedHopIds.has(hopId)) return
@@ -77,28 +73,29 @@ export class IndexedCandidateHeap {
     return candidate.portId * this.regionCount + candidate.nextRegionId
   }
 
+  private swap(leftIndex: number, rightIndex: number): void {
+    const leftCandidate = this.items[leftIndex]!
+    this.items[leftIndex] = this.items[rightIndex]!
+    this.items[rightIndex] = leftCandidate
+    this.indexByHopId.set(this.getHopId(this.items[leftIndex]!), leftIndex)
+    this.indexByHopId.set(this.getHopId(this.items[rightIndex]!), rightIndex)
+  }
+
   private siftUp(startIndex: number): void {
-    const candidate = this.items[startIndex]!
     let index = startIndex
     while (index > 0) {
       const parentIndex = (index - 1) >> 1
-      const parentCandidate = this.items[parentIndex]!
-      if (parentCandidate.f <= candidate.f) break
-      this.items[index] = parentCandidate
-      this.indexByHopId.set(this.getHopId(parentCandidate), index)
+      if (this.items[parentIndex]!.f <= this.items[index]!.f) return
+      this.swap(index, parentIndex)
       index = parentIndex
     }
-    if (index === startIndex) return
-    this.items[index] = candidate
-    this.indexByHopId.set(this.getHopId(candidate), index)
   }
 
   private siftDown(startIndex: number): void {
-    const candidate = this.items[startIndex]!
     let index = startIndex
     while (true) {
       const leftChildIndex = index * 2 + 1
-      if (leftChildIndex >= this.items.length) break
+      if (leftChildIndex >= this.items.length) return
 
       const rightChildIndex = leftChildIndex + 1
       const smallestChildIndex =
@@ -106,14 +103,9 @@ export class IndexedCandidateHeap {
         this.items[rightChildIndex]!.f < this.items[leftChildIndex]!.f
           ? rightChildIndex
           : leftChildIndex
-      const smallestChild = this.items[smallestChildIndex]!
-      if (candidate.f <= smallestChild.f) break
-      this.items[index] = smallestChild
-      this.indexByHopId.set(this.getHopId(smallestChild), index)
+      if (this.items[index]!.f <= this.items[smallestChildIndex]!.f) return
+      this.swap(index, smallestChildIndex)
       index = smallestChildIndex
     }
-    if (index === startIndex) return
-    this.items[index] = candidate
-    this.indexByHopId.set(this.getHopId(candidate), index)
   }
 }
