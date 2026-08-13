@@ -34,7 +34,10 @@ improves the lexicographic `(maximum region cost, total region cost)` objective.
 It first considers boundary-port swaps (including swaps with unused capacity),
 then replaces individual routes that cross the hottest region under several
 congestion weights. A mutation is committed only when it improves the complete
-solved graph, so the original solution remains a safe fallback.
+solved graph. Replacement searches prioritize the routes contributing most to
+the hot-region cost and reject routes that add more than four region segments
+over their input path, preventing a local congestion win from creating an
+unbounded global detour. The original solution remains a safe fallback.
 
 ```ts
 import {
@@ -50,7 +53,7 @@ if (!solver.solved || solver.failed) {
 }
 
 const optimizer = new UnravelTinyHyperGraphSolver(solver, {
-  TARGET_MAX_REGION_COST_REDUCTION_RATIO: 0.5,
+  TARGET_MAX_REGION_COST_REDUCTION_RATIO: 0.51,
 })
 optimizer.solve()
 
@@ -60,7 +63,8 @@ const optimizedGraph = optimizer.getOutput()
 The section pipeline runs this as its final `optimizeRegionCosts` stage. Useful
 statistics include `initialMaxRegionCost`, `finalMaxRegionCost`,
 `acceptedMutationCount`, `evaluatedMutationCount`, and
-`optimizationStopReason`. Set `MAX_MUTATIONS: 0` to retain the solved input
+`rejectedRerouteDetourCount`. Set `MAX_REROUTE_SEGMENT_INCREASE` to tune the
+per-route detour ceiling, or `MAX_MUTATIONS: 0` to retain the solved input
 without running post-solve mutations.
 
 Existing routing can be preloaded through the standard region assignments:

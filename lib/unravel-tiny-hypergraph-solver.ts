@@ -59,8 +59,12 @@ export interface UnravelTinyHyperGraphSolverOptions
   MAX_HOT_REGIONS?: number
   /** Iteration cap for each single-route replacement search. */
   REROUTE_MAX_ITERATIONS?: number
+  /** Maximum routes from the hot regions evaluated per mutation. */
+  MAX_REROUTE_ROUTES?: number
   /** Congestion multipliers explored for each route replacement. */
   REROUTE_CONGESTION_FACTORS?: number[]
+  /** Maximum extra region segments accepted for an individual rerouted route. */
+  MAX_REROUTE_SEGMENT_INCREASE?: number
   /** Stop after reducing the input maximum region cost by this fraction. */
   TARGET_MAX_REGION_COST_REDUCTION_RATIO?: number
 }
@@ -212,17 +216,21 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
 export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   MAX_MUTATIONS = 16
   MAX_HOT_REGIONS = 1
-  REROUTE_MAX_ITERATIONS = 30_000
-  REROUTE_CONGESTION_FACTORS = [0, 0.5, 2, 10]
-  TARGET_MAX_REGION_COST_REDUCTION_RATIO = 0.5
+  REROUTE_MAX_ITERATIONS = 10_000
+  MAX_REROUTE_ROUTES = 24
+  REROUTE_CONGESTION_FACTORS = [0, 2]
+  MAX_REROUTE_SEGMENT_INCREASE = 4
+  TARGET_MAX_REGION_COST_REDUCTION_RATIO = 0.51
 
   readonly inputSolver: TinyHyperGraphSolver
   initialSummary: RegionCostSummary
   currentSummary: RegionCostSummary
   acceptedMutationCount = 0
   evaluatedMutationCount = 0
+  rejectedRerouteDetourCount = 0
 
   private readonly endpointPortMask: Int8Array
+  private readonly initialRouteSegmentCounts: Int32Array
 
   constructor(
     inputSolver: TinyHyperGraphSolver,
@@ -252,10 +260,22 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         Math.floor(options.REROUTE_MAX_ITERATIONS),
       )
     }
+    if (options?.MAX_REROUTE_ROUTES !== undefined) {
+      this.MAX_REROUTE_ROUTES = Math.max(
+        0,
+        Math.floor(options.MAX_REROUTE_ROUTES),
+      )
+    }
     if (options?.REROUTE_CONGESTION_FACTORS !== undefined) {
       this.REROUTE_CONGESTION_FACTORS = [...options.REROUTE_CONGESTION_FACTORS]
         .filter((factor) => Number.isFinite(factor) && factor >= 0)
         .sort((left, right) => left - right)
+    }
+    if (options?.MAX_REROUTE_SEGMENT_INCREASE !== undefined) {
+      this.MAX_REROUTE_SEGMENT_INCREASE = Math.max(
+        0,
+        Math.floor(options.MAX_REROUTE_SEGMENT_INCREASE),
+      )
     }
     if (options?.TARGET_MAX_REGION_COST_REDUCTION_RATIO !== undefined) {
       this.TARGET_MAX_REGION_COST_REDUCTION_RATIO = Math.min(
@@ -287,9 +307,14 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     this.state.goalPortId = -1
 
     this.endpointPortMask = new Int8Array(this.topology.portCount)
+    this.initialRouteSegmentCounts = new Int32Array(this.problem.routeCount)
     for (let routeId = 0; routeId < this.problem.routeCount; routeId++) {
       this.endpointPortMask[this.problem.routeStartPort[routeId]!] = 1
       this.endpointPortMask[this.problem.routeEndPort[routeId]!] = 1
+      this.initialRouteSegmentCounts[routeId] = this.getRouteSegmentCount(
+        inputSolver,
+        routeId,
+      )
     }
 
     this.initialSummary = this.summarizeCurrentState()
@@ -305,6 +330,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       finalTotalRegionCost: this.currentSummary.totalRegionCost,
       acceptedMutationCount: 0,
       evaluatedMutationCount: 0,
+      rejectedRerouteDetourCount: 0,
     }
 
     if (this.MAX_MUTATIONS === 0) {
@@ -348,6 +374,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       finalTotalRegionCost: this.currentSummary.totalRegionCost,
       acceptedMutationCount: this.acceptedMutationCount,
       evaluatedMutationCount: this.evaluatedMutationCount,
+      rejectedRerouteDetourCount: this.rejectedRerouteDetourCount,
       lastMutationKind: mutation.kind,
       ...(mutation.kind === "swap"
         ? {
@@ -545,6 +572,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   private findBestRerouteMutation(): RerouteMutation | undefined {
     if (
       this.MAX_HOT_REGIONS === 0 ||
+      this.MAX_REROUTE_ROUTES === 0 ||
       this.REROUTE_CONGESTION_FACTORS.length === 0
     ) {
       return
@@ -572,7 +600,24 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
           this.state.regionSegments[regionId]!.map(([routeId]) => routeId),
         ),
       ),
-    ].sort((left, right) => left - right)
+    ]
+      .map((routeId) => ({
+        routeId,
+        hotRegionCostContribution: hotRegionIds.reduce(
+          (total, regionId) =>
+            total +
+            this.state.regionIntersectionCaches[regionId]!.existingRegionCost -
+            this.computeRegionCostWithoutRoute(regionId, routeId),
+          0,
+        ),
+      }))
+      .sort(
+        (left, right) =>
+          right.hotRegionCostContribution - left.hotRegionCostContribution ||
+          left.routeId - right.routeId,
+      )
+      .slice(0, this.MAX_REROUTE_ROUTES)
+      .map(({ routeId }) => routeId)
 
     let bestMutation: RerouteMutation | undefined
     for (const routeId of routeIds) {
@@ -586,6 +631,19 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         candidateSolver.solve()
         this.evaluatedMutationCount += 1
         if (!candidateSolver.solved || candidateSolver.failed) continue
+
+        const candidateRouteSegmentCount = this.getRouteSegmentCount(
+          candidateSolver,
+          routeId,
+        )
+        if (
+          candidateRouteSegmentCount >
+          this.initialRouteSegmentCounts[routeId]! +
+            this.MAX_REROUTE_SEGMENT_INCREASE
+        ) {
+          this.rejectedRerouteDetourCount += 1
+          continue
+        }
 
         const summary = this.summarizeSolverState(candidateSolver)
         if (compareRegionCostSummaries(summary, this.currentSummary) >= 0) {
@@ -613,6 +671,78 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     }
 
     return bestMutation
+  }
+
+  private getRouteSegmentCount(
+    solver: TinyHyperGraphSolver,
+    routeId: RouteId,
+  ): number {
+    let segmentCount = 0
+    for (const segments of solver.state.regionSegments) {
+      for (const [segmentRouteId] of segments) {
+        if (segmentRouteId === routeId) segmentCount += 1
+      }
+    }
+    return segmentCount
+  }
+
+  private computeRegionCostWithoutRoute(
+    regionId: RegionId,
+    removedRouteId: RouteId,
+  ): number {
+    const netIds: NetId[] = []
+    const lesserAngles: number[] = []
+    const greaterAngles: number[] = []
+    const layerMasks: number[] = []
+    let entryExitLayerChanges = 0
+
+    for (const [routeId, fromPortId, toPortId] of this.state.regionSegments[
+      regionId
+    ]!) {
+      if (routeId === removedRouteId) continue
+      const geometry = this.populateSegmentGeometryScratch(
+        regionId,
+        fromPortId,
+        toPortId,
+      )
+      netIds.push(this.problem.routeNet[routeId]!)
+      lesserAngles.push(geometry.lesserAngle)
+      greaterAngles.push(geometry.greaterAngle)
+      layerMasks.push(geometry.layerMask)
+      entryExitLayerChanges += geometry.entryExitLayerChanges
+    }
+
+    let sameLayerIntersections = 0
+    let crossingLayerIntersections = 0
+    for (let leftIndex = 0; leftIndex < netIds.length; leftIndex++) {
+      for (
+        let rightIndex = leftIndex + 1;
+        rightIndex < netIds.length;
+        rightIndex++
+      ) {
+        if (netIds[leftIndex] === netIds[rightIndex]) continue
+        const intersects =
+          (lesserAngles[rightIndex]! < lesserAngles[leftIndex]! &&
+            lesserAngles[leftIndex]! < greaterAngles[rightIndex]!) !==
+          (lesserAngles[rightIndex]! < greaterAngles[leftIndex]! &&
+            greaterAngles[leftIndex]! < greaterAngles[rightIndex]!)
+        if (!intersects) continue
+
+        if ((layerMasks[leftIndex]! & layerMasks[rightIndex]!) !== 0) {
+          sameLayerIntersections += 1
+        } else {
+          crossingLayerIntersections += 1
+        }
+      }
+    }
+
+    return this.computeRegionCostForRegion(
+      regionId,
+      sameLayerIntersections,
+      crossingLayerIntersections,
+      entryExitLayerChanges,
+      netIds.length,
+    )
   }
 
   private summarizeSolverState(
@@ -793,6 +923,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       finalTotalRegionCost: this.currentSummary.totalRegionCost,
       acceptedMutationCount: this.acceptedMutationCount,
       evaluatedMutationCount: this.evaluatedMutationCount,
+      rejectedRerouteDetourCount: this.rejectedRerouteDetourCount,
       optimizationStopReason: reason,
       optimized:
         compareRegionCostSummaries(this.currentSummary, this.initialSummary) <

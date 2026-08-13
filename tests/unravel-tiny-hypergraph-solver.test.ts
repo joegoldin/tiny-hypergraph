@@ -74,6 +74,12 @@ const getMaxRegionCost = (solver: TinyHyperGraphSolver) =>
     0,
   )
 
+const getTotalSegmentCount = (solver: TinyHyperGraphSolver) =>
+  solver.state.regionSegments.reduce(
+    (total, segments) => total + segments.length,
+    0,
+  )
+
 const createSolvedSolverWithAlternatePath = () => {
   const topology: TinyHyperGraphTopology = {
     portCount: 11,
@@ -198,6 +204,7 @@ test("unravel solver replaces a route through the hottest region", () => {
     MAX_MUTATIONS: 1,
     MAX_HOT_REGIONS: 1,
     REROUTE_CONGESTION_FACTORS: [0],
+    MAX_REROUTE_SEGMENT_INCREASE: 10,
   })
 
   solver.solve()
@@ -206,6 +213,25 @@ test("unravel solver replaces a route through the hottest region", () => {
   expect(getMaxRegionCost(solver)).toBe(0)
   expect(solver.stats.lastMutationKind).toBe("reroute")
   expect(solver.getOutput().solvedRoutes).toHaveLength(2)
+})
+
+test("unravel solver rejects a cost-improving route detour at a zero ceiling", () => {
+  const inputSolver = createSolvedSolverWithAlternatePath()
+  const initialMaxRegionCost = getMaxRegionCost(inputSolver)
+  const initialSegmentCount = getTotalSegmentCount(inputSolver)
+  const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
+    MAX_MUTATIONS: 1,
+    MAX_HOT_REGIONS: 1,
+    REROUTE_CONGESTION_FACTORS: [0],
+    MAX_REROUTE_SEGMENT_INCREASE: 0,
+  })
+
+  solver.solve()
+
+  expect(getMaxRegionCost(solver)).toBe(initialMaxRegionCost)
+  expect(getTotalSegmentCount(solver)).toBe(initialSegmentCount)
+  expect(solver.stats.acceptedMutationCount).toBe(0)
+  expect(solver.stats.rejectedRerouteDetourCount).toBeGreaterThan(0)
 })
 
 test("unravel solver requires a completed input solve", () => {
