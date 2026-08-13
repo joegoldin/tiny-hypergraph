@@ -27,6 +27,42 @@ if (!solver.solved || solver.failed) {
 const solvedGraph = solver.getOutput()
 ```
 
+### Optimize region costs after solving
+
+`UnravelTinyHyperGraphSolver` accepts a completed solver and monotonically
+improves the lexicographic `(maximum region cost, total region cost)` objective.
+It first considers boundary-port swaps (including swaps with unused capacity),
+then replaces individual routes that cross the hottest region under several
+congestion weights. A mutation is committed only when it improves the complete
+solved graph, so the original solution remains a safe fallback.
+
+```ts
+import {
+  TinyHyperGraphSolver,
+  UnravelTinyHyperGraphSolver,
+} from "lib"
+
+const solver = new TinyHyperGraphSolver(topology, problem)
+solver.solve()
+
+if (!solver.solved || solver.failed) {
+  throw new Error(solver.error ?? "Solver did not finish successfully")
+}
+
+const optimizer = new UnravelTinyHyperGraphSolver(solver, {
+  TARGET_MAX_REGION_COST_REDUCTION_RATIO: 0.5,
+})
+optimizer.solve()
+
+const optimizedGraph = optimizer.getOutput()
+```
+
+The section pipeline runs this as its final `optimizeRegionCosts` stage. Useful
+statistics include `initialMaxRegionCost`, `finalMaxRegionCost`,
+`acceptedMutationCount`, `evaluatedMutationCount`, and
+`optimizationStopReason`. Set `MAX_MUTATIONS: 0` to retain the solved input
+without running post-solve mutations.
+
 Existing routing can be preloaded through the standard region assignments:
 
 ```ts

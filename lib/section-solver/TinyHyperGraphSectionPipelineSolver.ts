@@ -9,6 +9,10 @@ import type {
   TinyHyperGraphTopology,
 } from "../core"
 import { TinyHyperGraphSolver } from "../core"
+import {
+  UnravelTinyHyperGraphSolver,
+  type UnravelTinyHyperGraphSolverOptions,
+} from "../unravel-tiny-hypergraph-solver"
 import type { RegionId } from "../types"
 import type { TinyHyperGraphSectionSolverOptions } from "./index"
 import { getActiveSectionRouteIds, TinyHyperGraphSectionSolver } from "./index"
@@ -315,6 +319,7 @@ export interface TinyHyperGraphSectionPipelineInput {
   createSectionMask?: (context: TinyHyperGraphSectionMaskContext) => Int8Array
   solveGraphOptions?: TinyHyperGraphSolverOptions
   sectionSolverOptions?: TinyHyperGraphSectionSolverOptions
+  unravelSolverOptions?: UnravelTinyHyperGraphSolverOptions
   sectionSearchConfig?: TinyHyperGraphSectionPipelineSearchConfig
 }
 
@@ -379,7 +384,28 @@ export class TinyHyperGraphSectionPipelineSolver extends BasePipelineSolver<Tiny
       getConstructorParams: (instance: TinyHyperGraphSectionPipelineSolver) =>
         instance.getSectionStageParams(),
     },
+    {
+      solverName: "optimizeRegionCosts",
+      solverClass: UnravelTinyHyperGraphSolver,
+      getConstructorParams: (instance: TinyHyperGraphSectionPipelineSolver) =>
+        instance.getUnravelStageParams(),
+    },
   ]
+
+  getUnravelStageParams(): ConstructorParameters<
+    typeof UnravelTinyHyperGraphSolver
+  > {
+    const sectionSolver =
+      this.getSolver<TinyHyperGraphSectionSolver>("optimizeSection")
+    if (!sectionSolver?.solved || sectionSolver.failed) {
+      throw new Error("optimizeSection did not produce a solved solver")
+    }
+
+    return [
+      sectionSolver.getSolvedSolver(),
+      this.inputProblem.unravelSolverOptions,
+    ]
+  }
 
   getSectionStageParams(): [
     TinyHyperGraphTopology,
@@ -502,6 +528,7 @@ export class TinyHyperGraphSectionPipelineSolver extends BasePipelineSolver<Tiny
 
   override getOutput() {
     return (
+      this.getStageOutput<SerializedHyperGraph>("optimizeRegionCosts") ??
       this.getStageOutput<SerializedHyperGraph>("optimizeSection") ??
       this.getStageOutput<SerializedHyperGraph>("solveGraph") ??
       null
