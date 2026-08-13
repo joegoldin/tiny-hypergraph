@@ -16,19 +16,29 @@ const repro = fixture as unknown as {
   solveGraphOptions: TinyHyperGraphSolverOptions
 }
 
-test("repro: unused port triggers a repeated selective rerip cycle", () => {
-  const { topology, problem } = loadSerializedHyperGraph(
-    repro.serializedHyperGraph,
-  )
-  const solver = new SelectiveReripTinyHyperGraphSolver(
-    topology,
-    problem,
-    repro.solveGraphOptions,
-  )
+const REPRO_TIMEOUT_MS = 30_000
 
-  solver.solve()
+test(
+  "repro: unused port triggers a repeated selective rerip cycle",
+  () => {
+    const { topology, problem } = loadSerializedHyperGraph(
+      repro.serializedHyperGraph,
+    )
+    const solver = new SelectiveReripTinyHyperGraphSolver(
+      topology,
+      problem,
+      repro.solveGraphOptions,
+    )
 
-  expect(getSvgFromGraphicsObject(solver.visualize())).toMatchSvgSnapshot(
-    import.meta.path,
-  )
-}, 120_000)
+    const timeoutAt = performance.now() + REPRO_TIMEOUT_MS
+    while (!solver.solved && !solver.failed && performance.now() < timeoutAt) {
+      solver.step()
+    }
+
+    expect(solver.solved).toBe(true)
+    expect(getSvgFromGraphicsObject(solver.visualize())).toMatchSvgSnapshot(
+      import.meta.path,
+    )
+  },
+  REPRO_TIMEOUT_MS + 10_000,
+)
