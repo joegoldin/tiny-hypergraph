@@ -8,7 +8,10 @@ import {
   type TinyHyperGraphSolverOptions,
 } from "./core"
 import { computeRoutingRiskRegionCostWithPreparedCapacity } from "./computeRegionCost"
-import { classifyIntersectionLayerMasks } from "./countNewIntersections"
+import {
+  classifyIntersectionLayerMasks,
+  countNewIntersectionsWithValuesInto,
+} from "./countNewIntersections"
 import type {
   PortId,
   RegionId,
@@ -550,6 +553,30 @@ const getUnravelCoreOptions = (
   ...options,
 })
 
+interface ReplacementRegionChordScorer {
+  sourceCache: RegionIntersectionCache
+  regionPortCount: number
+  intersectionCountStride: number
+  absentOwnerId: number
+  ownerSegmentIndexesByOwnerId: Map<number, Int32Array>
+  /**
+   * Symmetric region-local chord tables, allocated one row at a time. A zero
+   * packed value means "not scored"; real intersection counts are stored +1.
+   */
+  packedIntersectionCountsByLocalPort: Array<Float64Array | undefined>
+  /** Final costs for owners that have no fixed chord in this region. */
+  sharedFinalCostsByLocalPort: Array<Float64Array | undefined>
+}
+
+interface ActiveReplacementRegionCostMemo {
+  sourceCache: RegionIntersectionCache
+  ownerId: number
+  scorer: ReplacementRegionChordScorer
+  ownerSegmentIndexes?: Int32Array
+  /** Final costs that include the active owner's exact crossing correction. */
+  finalCostsByLocalPort?: Array<Float64Array | undefined>
+}
+
 class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
   replacementRouteSegmentCount = 0
   physicalNeighborCacheHitCount = 0
@@ -567,10 +594,17 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
   private readonly physicalNeighborsByRouteId: Array<
     Map<number, readonly PortId[]>
   >
-  private readonly replacementRegionCostByRegionAndPort = new Map<
-    number,
-    Map<PortId, number>
+  private readonly replacementRegionChordScorerByCache = new WeakMap<
+    RegionIntersectionCache,
+    ReplacementRegionChordScorer
   >()
+  private readonly activeReplacementRegionCostMemoByRegion: Array<
+    ActiveReplacementRegionCostMemo | undefined
+  >
+  private readonly firstRegionLocalPortIndexByPortId: Int32Array
+  private readonly secondRegionLocalPortIndexByPortId: Int32Array
+  private readonly overflowRegionLocalPortIndex = new Map<number, number>()
+  private readonly replacementIntersectionCountsScratch = new Int32Array(3)
   replacementRegionCostCacheHitCount = 0
   replacementRegionCostCacheMissCount = 0
   private indexedInputRegionSegments?: Array<[RouteId, PortId, PortId][]>
@@ -631,6 +665,39 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
       { length: this.problem.routeCount },
       () => new Map(),
     )
+    this.activeReplacementRegionCostMemoByRegion = new Array(
+      this.topology.regionCount,
+    )
+    this.firstRegionLocalPortIndexByPortId = new Int32Array(
+      this.topology.portCount,
+    ).fill(-1)
+    this.secondRegionLocalPortIndexByPortId = new Int32Array(
+      this.topology.portCount,
+    ).fill(-1)
+    for (
+      let regionId = 0;
+      regionId < this.topology.regionIncidentPorts.length;
+      regionId++
+    ) {
+      const incidentPortIds = this.topology.regionIncidentPorts[regionId]!
+      for (
+        let localIndex = 0;
+        localIndex < incidentPortIds.length;
+        localIndex++
+      ) {
+        const portId = incidentPortIds[localIndex]!
+        if (this.candidateFirstRegionByPortId[portId] === regionId) {
+          this.firstRegionLocalPortIndexByPortId[portId] = localIndex
+        } else if (this.candidateSecondRegionByPortId[portId] === regionId) {
+          this.secondRegionLocalPortIndexByPortId[portId] = localIndex
+        } else {
+          this.overflowRegionLocalPortIndex.set(
+            portId * this.topology.regionCount + regionId,
+            localIndex,
+          )
+        }
+      }
+    }
   }
 
   private indexInputRouteRegions(inputSolver: TinyHyperGraphSolver) {
@@ -691,8 +758,6 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     this.writableRegionMask.fill(0)
     this.writableRegionIds.length = 0
     this.blockingRouteIds.clear()
-    this.replacementRegionCostByRegionAndPort.clear()
-
     this.state.portAssignment.set(inputSolver.state.portAssignment)
     this.state.regionSegments = inputSolver.state.regionSegments.slice()
     this.state.regionIntersectionCaches =
@@ -829,20 +894,6 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     }
   }
 
-  override computeG(
-    currentCandidate: Candidate,
-    neighborPortId: PortId,
-    maximumCost = Number.POSITIVE_INFINITY,
-    knownSegmentDistance?: number,
-  ): number {
-    return super.computeG(
-      currentCandidate,
-      neighborPortId,
-      maximumCost,
-      knownSegmentDistance,
-    )
-  }
-
   override onPathFound(
     finalCandidate: Parameters<TinyHyperGraphSolver["onPathFound"]>[0],
   ) {
@@ -911,11 +962,122 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
       )
       this.rebuildRegionCache(regionId)
     }
-    // A multi-route ejection chain continues from the state modified above.
-    // Marginal chord costs are exact only for the route state in which they
-    // were computed, so start the next route with a fresh memo while retaining
-    // geometry-only neighbor caches.
-    this.replacementRegionCostByRegionAndPort.clear()
+  }
+
+  private getRegionLocalPortIndex(regionId: RegionId, portId: PortId): number {
+    if (this.candidateFirstRegionByPortId[portId] === regionId) {
+      return this.firstRegionLocalPortIndexByPortId[portId]!
+    }
+    if (this.candidateSecondRegionByPortId[portId] === regionId) {
+      return this.secondRegionLocalPortIndexByPortId[portId]!
+    }
+    return (
+      this.overflowRegionLocalPortIndex.get(
+        portId * this.topology.regionCount + regionId,
+      ) ?? -1
+    )
+  }
+
+  private createReplacementRegionChordScorer(
+    regionId: RegionId,
+    sourceCache: RegionIntersectionCache,
+  ): ReplacementRegionChordScorer {
+    const ownerSegmentIndexes = new Map<number, number[]>()
+    for (let index = 0; index < sourceCache.netIds.length; index++) {
+      const ownerId = sourceCache.netIds[index]!
+      const indexes = ownerSegmentIndexes.get(ownerId)
+      if (indexes) indexes.push(index)
+      else ownerSegmentIndexes.set(ownerId, [index])
+    }
+    const ownerSegmentIndexesByOwnerId = new Map<number, Int32Array>()
+    for (const [ownerId, indexes] of ownerSegmentIndexes) {
+      ownerSegmentIndexesByOwnerId.set(ownerId, Int32Array.from(indexes))
+    }
+    let absentOwnerId = -1
+    while (ownerSegmentIndexesByOwnerId.has(absentOwnerId)) absentOwnerId -= 1
+    const regionPortCount = this.topology.regionIncidentPorts[regionId]!.length
+    return {
+      sourceCache,
+      regionPortCount,
+      intersectionCountStride: sourceCache.netIds.length + 1,
+      absentOwnerId,
+      ownerSegmentIndexesByOwnerId,
+      packedIntersectionCountsByLocalPort: new Array(regionPortCount),
+      sharedFinalCostsByLocalPort: new Array(regionPortCount),
+    }
+  }
+
+  private getActiveReplacementRegionCostMemo(
+    regionId: RegionId,
+  ): ActiveReplacementRegionCostMemo {
+    const sourceCache = this.state.regionIntersectionCaches[regionId]!
+    const ownerId = this.getCurrentIntersectionOwnerId()
+    const activeMemo = this.activeReplacementRegionCostMemoByRegion[regionId]
+    if (
+      activeMemo?.sourceCache === sourceCache &&
+      activeMemo.ownerId === ownerId
+    ) {
+      return activeMemo
+    }
+
+    let scorer = this.replacementRegionChordScorerByCache.get(sourceCache)
+    if (!scorer) {
+      scorer = this.createReplacementRegionChordScorer(regionId, sourceCache)
+      this.replacementRegionChordScorerByCache.set(sourceCache, scorer)
+    }
+    const ownerSegmentIndexes = scorer.ownerSegmentIndexesByOwnerId.get(ownerId)
+    const nextMemo: ActiveReplacementRegionCostMemo = {
+      sourceCache,
+      ownerId,
+      scorer,
+      ownerSegmentIndexes,
+      finalCostsByLocalPort: ownerSegmentIndexes
+        ? new Array(scorer.regionPortCount)
+        : undefined,
+    }
+    this.activeReplacementRegionCostMemoByRegion[regionId] = nextMemo
+    return nextMemo
+  }
+
+  private countOwnerChordIntersections(
+    cache: RegionIntersectionCache,
+    ownerSegmentIndexes: Int32Array,
+    newLesserAngle: number,
+    newGreaterAngle: number,
+    newLayerMask: number,
+  ): [sameLayer: number, crossingLayer: number] {
+    let sameLayerIntersections = 0
+    let crossingLayerIntersections = 0
+    for (const index of ownerSegmentIndexes) {
+      if (
+        this.REGION_COST_MODEL === "routing-risk" &&
+        (newLesserAngle === cache.lesserAngles[index] ||
+          newLesserAngle === cache.greaterAngles[index] ||
+          newGreaterAngle === cache.lesserAngles[index] ||
+          newGreaterAngle === cache.greaterAngles[index])
+      ) {
+        continue
+      }
+      const lesserAngleIsInsideInterval =
+        newLesserAngle < cache.lesserAngles[index]! &&
+        cache.lesserAngles[index]! < newGreaterAngle
+      const greaterAngleIsInsideInterval =
+        newLesserAngle < cache.greaterAngles[index]! &&
+        cache.greaterAngles[index]! < newGreaterAngle
+      if (lesserAngleIsInsideInterval === greaterAngleIsInsideInterval) {
+        continue
+      }
+      const intersectionKind = classifyIntersectionLayerMasks(
+        newLayerMask,
+        cache.layerMasks[index]!,
+        this.REGION_COST_MODEL,
+      )
+      if (intersectionKind === "same-layer") sameLayerIntersections += 1
+      else if (intersectionKind === "transition-pair") {
+        crossingLayerIntersections += 1
+      }
+    }
+    return [sameLayerIntersections, crossingLayerIntersections]
   }
 
   protected override computeRegionCostAfterAddingSegment(
@@ -923,29 +1085,119 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     currentPortId: PortId,
     neighborPortId: PortId,
   ): number {
-    const lesserPortId = Math.min(currentPortId, neighborPortId)
-    const greaterPortId = Math.max(currentPortId, neighborPortId)
-    const regionPortKey = regionId * this.topology.portCount + lesserPortId
-    let costByGreaterPortId =
-      this.replacementRegionCostByRegionAndPort.get(regionPortKey)
-    const cachedCost = costByGreaterPortId?.get(greaterPortId)
-    if (cachedCost !== undefined) {
+    const memo = this.getActiveReplacementRegionCostMemo(regionId)
+    const currentLocalIndex = this.getRegionLocalPortIndex(
+      regionId,
+      currentPortId,
+    )
+    const neighborLocalIndex = this.getRegionLocalPortIndex(
+      regionId,
+      neighborPortId,
+    )
+    if (currentLocalIndex < 0 || neighborLocalIndex < 0) {
+      return super.computeRegionCostAfterAddingSegment(
+        regionId,
+        currentPortId,
+        neighborPortId,
+      )
+    }
+    const lesserLocalIndex = Math.min(currentLocalIndex, neighborLocalIndex)
+    const greaterLocalIndex = Math.max(currentLocalIndex, neighborLocalIndex)
+    const finalCostsByLocalPort =
+      memo.finalCostsByLocalPort ?? memo.scorer.sharedFinalCostsByLocalPort
+    const cachedFinalCost =
+      finalCostsByLocalPort[lesserLocalIndex]?.[greaterLocalIndex]
+    if (cachedFinalCost !== undefined && !Number.isNaN(cachedFinalCost)) {
       this.replacementRegionCostCacheHitCount += 1
-      return cachedCost
+      return cachedFinalCost
     }
 
     this.replacementRegionCostCacheMissCount += 1
-    const cost = super.computeRegionCostAfterAddingSegment(
+    const geometry = this.populateSegmentGeometryScratch(
       regionId,
       currentPortId,
       neighborPortId,
     )
-    costByGreaterPortId ??= new Map<PortId, number>()
-    costByGreaterPortId.set(greaterPortId, cost)
-    this.replacementRegionCostByRegionAndPort.set(
-      regionPortKey,
-      costByGreaterPortId,
-    )
+    let sameLayerIntersections = 0
+    let crossingLayerIntersections = 0
+    let entryExitLayerChanges = geometry.entryExitLayerChanges
+
+    if (this.REGION_COST_MODEL === "routing-risk" && memo.ownerSegmentIndexes) {
+      // Match the routing-risk model's route re-entry semantics exactly: only
+      // the first chord owned by a route contributes crossings or transitions.
+      entryExitLayerChanges = 0
+    } else {
+      let packedCountsRow =
+        memo.scorer.packedIntersectionCountsByLocalPort[lesserLocalIndex]
+      let packedCounts = packedCountsRow?.[greaterLocalIndex] ?? 0
+      if (packedCounts === 0) {
+        countNewIntersectionsWithValuesInto(
+          memo.sourceCache,
+          memo.scorer.absentOwnerId,
+          geometry.lesserAngle,
+          geometry.greaterAngle,
+          geometry.layerMask,
+          geometry.entryExitLayerChanges,
+          this.REGION_COST_MODEL,
+          this.replacementIntersectionCountsScratch,
+        )
+        sameLayerIntersections = this.replacementIntersectionCountsScratch[0]!
+        crossingLayerIntersections =
+          this.replacementIntersectionCountsScratch[1]!
+        packedCounts =
+          sameLayerIntersections * memo.scorer.intersectionCountStride +
+          crossingLayerIntersections +
+          1
+        if (!packedCountsRow) {
+          packedCountsRow = new Float64Array(memo.scorer.regionPortCount)
+          memo.scorer.packedIntersectionCountsByLocalPort[lesserLocalIndex] =
+            packedCountsRow
+        }
+        packedCountsRow[greaterLocalIndex] = packedCounts
+      } else {
+        const counts = packedCounts - 1
+        sameLayerIntersections = Math.floor(
+          counts / memo.scorer.intersectionCountStride,
+        )
+        crossingLayerIntersections =
+          counts % memo.scorer.intersectionCountStride
+      }
+
+      if (memo.ownerSegmentIndexes) {
+        const [ownerSameLayerIntersections, ownerCrossingLayerIntersections] =
+          this.countOwnerChordIntersections(
+            memo.sourceCache,
+            memo.ownerSegmentIndexes,
+            geometry.lesserAngle,
+            geometry.greaterAngle,
+            geometry.layerMask,
+          )
+        sameLayerIntersections -= ownerSameLayerIntersections
+        crossingLayerIntersections -= ownerCrossingLayerIntersections
+      }
+    }
+
+    const cost =
+      sameLayerIntersections > 0 && this.isKnownSingleLayerRegion(regionId)
+        ? Number.POSITIVE_INFINITY
+        : this.computeRegionCostForRegion(
+            regionId,
+            memo.sourceCache.existingSameLayerIntersections +
+              sameLayerIntersections,
+            memo.sourceCache.existingCrossingLayerIntersections +
+              crossingLayerIntersections,
+            memo.sourceCache.existingEntryExitLayerChanges +
+              entryExitLayerChanges,
+            memo.sourceCache.existingSegmentCount + 1,
+          )
+    let finalCostsRow = finalCostsByLocalPort[lesserLocalIndex]
+    if (!finalCostsRow) {
+      finalCostsRow = new Float64Array(memo.scorer.regionPortCount).fill(
+        Number.NaN,
+      )
+      finalCostsByLocalPort[lesserLocalIndex] = finalCostsRow
+    }
+    finalCostsRow[greaterLocalIndex] = cost
     return cost
   }
 
