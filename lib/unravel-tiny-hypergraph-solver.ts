@@ -59,6 +59,13 @@ interface IndexedTerminalKeepout extends TerminalKeepout {
   netId: number
 }
 
+interface CachedTerminalKeepoutGeometry {
+  keepoutIndexes: Int32Array
+  clearances: Float64Array
+  violatingKeepoutIndexes: Int32Array
+  violatingClearances: Float64Array
+}
+
 const getTerminalKeepoutCellKey = (z: number, cellX: number, cellY: number) =>
   `${z}:${cellX}:${cellY}`
 
@@ -437,6 +444,8 @@ const getUnravelCoreOptions = (
 
 class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
   replacementRouteSegmentCount = 0
+  physicalNeighborCacheHitCount = 0
+  physicalNeighborCacheMissCount = 0
   readonly replacementRouteSegmentCountByRouteId: Int32Array
   readonly replacementRouteLayerChangeCountByRouteId: Int32Array
   readonly replacementRouteSegmentLengthByRouteId: Float64Array
@@ -447,6 +456,9 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     RouteId,
     ReplacementPathSegment[]
   >()
+  private readonly physicalNeighborsByRouteId: Array<
+    Map<number, readonly PortId[]>
+  >
   private indexedInputRegionSegments?: Array<[RouteId, PortId, PortId][]>
   private readonly inputRegionIdsByRouteId: RegionId[][]
 
@@ -455,6 +467,7 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     maxIterations: number,
     private readonly isReplacementSegmentAllowed?: (
       routeId: RouteId,
+      regionId: RegionId,
       fromPortId: PortId,
       toPortId: PortId,
     ) => boolean,
@@ -479,7 +492,6 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
         MAX_ITERATIONS: maxIterations,
       },
     )
-
     this.writableRegionMask = new Int8Array(this.topology.regionCount)
     this.replacementRouteSegmentCountByRouteId = new Int32Array(
       this.problem.routeCount,
@@ -493,6 +505,10 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     this.inputRegionIdsByRouteId = Array.from(
       { length: this.problem.routeCount },
       () => [],
+    )
+    this.physicalNeighborsByRouteId = Array.from(
+      { length: this.problem.routeCount },
+      () => new Map(),
     )
   }
 
@@ -639,23 +655,55 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     return true
   }
 
+  protected override getCandidateNeighborPortIds(
+    currentCandidate: Candidate,
+  ): readonly PortId[] {
+    const routeId = this.state.currentRouteId
+    if (routeId === undefined || !this.isReplacementSegmentAllowed) {
+      return super.getCandidateNeighborPortIds(currentCandidate)
+    }
+    const hopId = this.getHopId(
+      currentCandidate.portId,
+      currentCandidate.nextRegionId,
+    )
+    const routeCache = this.physicalNeighborsByRouteId[routeId]!
+    const cached = routeCache.get(hopId)
+    if (cached) {
+      this.physicalNeighborCacheHitCount += 1
+      return cached
+    }
+    this.physicalNeighborCacheMissCount += 1
+
+    const goalPortId = this.getRouteEndPortId(routeId)
+    const neighbors = super
+      .getCandidateNeighborPortIds(currentCandidate)
+      .filter(
+        (neighborPortId) =>
+          neighborPortId === currentCandidate.portId ||
+          neighborPortId === goalPortId ||
+          this.isReplacementSegmentAllowed!(
+            routeId,
+            currentCandidate.nextRegionId,
+            currentCandidate.portId,
+            neighborPortId,
+          ),
+      )
+    routeCache.set(hopId, neighbors)
+    return neighbors
+  }
+
+  invalidatePhysicalNeighborCache(routeIds: readonly RouteId[]) {
+    for (const routeId of routeIds) {
+      this.physicalNeighborsByRouteId[routeId]?.clear()
+    }
+  }
+
   override computeG(
     currentCandidate: Candidate,
     neighborPortId: PortId,
     maximumCost = Number.POSITIVE_INFINITY,
     knownSegmentDistance?: number,
   ): number {
-    if (
-      this.state.currentRouteId !== undefined &&
-      this.isReplacementSegmentAllowed &&
-      !this.isReplacementSegmentAllowed(
-        this.state.currentRouteId,
-        currentCandidate.portId,
-        neighborPortId,
-      )
-    ) {
-      return Number.POSITIVE_INFINITY
-    }
     return super.computeG(
       currentCandidate,
       neighborPortId,
@@ -672,9 +720,10 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
       this.state.currentRouteId !== undefined &&
       this.isReplacementSegmentAllowed &&
       solvedSegments.some(
-        ({ fromPortId, toPortId }) =>
+        ({ regionId, fromPortId, toPortId }) =>
           !this.isReplacementSegmentAllowed!(
             this.state.currentRouteId!,
+            regionId,
             fromPortId,
             toPortId,
           ),
@@ -781,7 +830,12 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
       for (const { regionId, fromPortId, toPortId } of path) {
         if (
           this.isReplacementSegmentAllowed &&
-          !this.isReplacementSegmentAllowed(routeId, fromPortId, toPortId)
+          !this.isReplacementSegmentAllowed(
+            routeId,
+            regionId,
+            fromPortId,
+            toPortId,
+          )
         ) {
           return false
         }
@@ -914,10 +968,19 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   terminalKeepoutBroadPhaseQueryCount = 0
   terminalKeepoutBroadPhaseCandidateCount = 0
   terminalKeepoutExactCheckCount = 0
+  terminalKeepoutGeometryCacheHitCount = 0
   rejectedCrossLayerSwapCount = 0
   prunedRerouteSearchCount = 0
   rerouteSearchIterationCount = 0
   rerouteSearchCount = 0
+  singleRerouteSearchIterationCount = 0
+  singleRerouteSearchCount = 0
+  singleRerouteFailedSearchIterationCount = 0
+  singleRerouteFailedSearchCount = 0
+  pairRerouteSearchIterationCount = 0
+  pairRerouteSearchCount = 0
+  pairRerouteFailedSearchIterationCount = 0
+  pairRerouteFailedSearchCount = 0
   reusedRerouteCandidateCount = 0
 
   private readonly endpointPortMask: Int8Array
@@ -927,6 +990,12 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   private readonly terminalKeepouts: IndexedTerminalKeepout[]
   private readonly terminalKeepoutCellSize: number
   private readonly terminalKeepoutIndexesByCell: Map<string, number[]>
+  private readonly terminalKeepoutGeometryIndexByRegion: Int32Array[]
+  private readonly terminalKeepoutGeometries: CachedTerminalKeepoutGeometry[] =
+    []
+  private readonly firstIncidentRegionPortIndex: Int32Array
+  private readonly secondIncidentRegionPortIndex: Int32Array
+  private readonly overflowIncidentRegionPortIndex = new Map<number, number>()
   private readonly hasForeignEndpointKeepouts: boolean
   private readonly routeForeignEndpointClearancesByRouteId: Float64Array[]
   private readonly routingRiskOwnerByRouteId: Int32Array
@@ -1175,6 +1244,39 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         }
       }
     }
+    if (this.hasForeignEndpointKeepouts) {
+      this.firstIncidentRegionPortIndex = new Int32Array(
+        this.topology.portCount,
+      ).fill(-1)
+      this.secondIncidentRegionPortIndex = new Int32Array(
+        this.topology.portCount,
+      ).fill(-1)
+      this.terminalKeepoutGeometryIndexByRegion =
+        this.topology.regionIncidentPorts.map((portIds, regionId) => {
+          const geometryIndexes = new Int32Array(
+            portIds.length * portIds.length,
+          ).fill(-1)
+          for (let portIndex = 0; portIndex < portIds.length; portIndex++) {
+            const portId = portIds[portIndex]!
+            const incidentRegionIds = this.topology.incidentPortRegion[portId]!
+            if (incidentRegionIds[0] === regionId) {
+              this.firstIncidentRegionPortIndex[portId] = portIndex
+            } else if (incidentRegionIds[1] === regionId) {
+              this.secondIncidentRegionPortIndex[portId] = portIndex
+            } else {
+              this.overflowIncidentRegionPortIndex.set(
+                portId * this.topology.regionCount + regionId,
+                portIndex,
+              )
+            }
+          }
+          return geometryIndexes
+        })
+    } else {
+      this.firstIncidentRegionPortIndex = new Int32Array(0)
+      this.secondIncidentRegionPortIndex = new Int32Array(0)
+      this.terminalKeepoutGeometryIndexByRegion = []
+    }
     this.routeForeignEndpointClearancesByRouteId = Array.from(
       { length: this.problem.routeCount },
       () => new Float64Array(this.terminalKeepouts.length),
@@ -1238,10 +1340,23 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       terminalKeepoutBroadPhaseCandidateCount:
         this.terminalKeepoutBroadPhaseCandidateCount,
       terminalKeepoutExactCheckCount: this.terminalKeepoutExactCheckCount,
+      terminalKeepoutGeometryCacheHitCount:
+        this.terminalKeepoutGeometryCacheHitCount,
+      terminalKeepoutGeometryCacheSize: this.terminalKeepoutGeometries.length,
+      terminalKeepoutPhysicalNeighborCacheHitCount: 0,
+      terminalKeepoutPhysicalNeighborCacheMissCount: 0,
       rejectedCrossLayerSwapCount: 0,
       prunedRerouteSearchCount: 0,
       rerouteSearchIterationCount: 0,
       rerouteSearchCount: 0,
+      singleRerouteSearchIterationCount: 0,
+      singleRerouteSearchCount: 0,
+      singleRerouteFailedSearchIterationCount: 0,
+      singleRerouteFailedSearchCount: 0,
+      pairRerouteSearchIterationCount: 0,
+      pairRerouteSearchCount: 0,
+      pairRerouteFailedSearchIterationCount: 0,
+      pairRerouteFailedSearchCount: 0,
       reusedRerouteCandidateCount: 0,
     }
 
@@ -1336,10 +1451,27 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       terminalKeepoutBroadPhaseCandidateCount:
         this.terminalKeepoutBroadPhaseCandidateCount,
       terminalKeepoutExactCheckCount: this.terminalKeepoutExactCheckCount,
+      terminalKeepoutGeometryCacheHitCount:
+        this.terminalKeepoutGeometryCacheHitCount,
+      terminalKeepoutGeometryCacheSize: this.terminalKeepoutGeometries.length,
+      terminalKeepoutPhysicalNeighborCacheHitCount:
+        this.routeReplacementSolver?.physicalNeighborCacheHitCount ?? 0,
+      terminalKeepoutPhysicalNeighborCacheMissCount:
+        this.routeReplacementSolver?.physicalNeighborCacheMissCount ?? 0,
       rejectedCrossLayerSwapCount: this.rejectedCrossLayerSwapCount,
       prunedRerouteSearchCount: this.prunedRerouteSearchCount,
       rerouteSearchIterationCount: this.rerouteSearchIterationCount,
       rerouteSearchCount: this.rerouteSearchCount,
+      singleRerouteSearchIterationCount: this.singleRerouteSearchIterationCount,
+      singleRerouteSearchCount: this.singleRerouteSearchCount,
+      singleRerouteFailedSearchIterationCount:
+        this.singleRerouteFailedSearchIterationCount,
+      singleRerouteFailedSearchCount: this.singleRerouteFailedSearchCount,
+      pairRerouteSearchIterationCount: this.pairRerouteSearchIterationCount,
+      pairRerouteSearchCount: this.pairRerouteSearchCount,
+      pairRerouteFailedSearchIterationCount:
+        this.pairRerouteFailedSearchIterationCount,
+      pairRerouteFailedSearchCount: this.pairRerouteFailedSearchCount,
       reusedRerouteCandidateCount: this.reusedRerouteCandidateCount,
       lastMutationKind: mutation.kind,
       ...(mutation.kind === "reroute"
@@ -2027,6 +2159,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         if (
           !this.isRouteSegmentAllowedByForeignEndpointKeepouts(
             routeId,
+            regionId,
             fromPortId,
             toPortId,
           )
@@ -2092,10 +2225,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         this,
         this.REROUTE_MAX_ITERATIONS,
         this.hasForeignEndpointKeepouts
-          ? (routeId, fromPortId, toPortId) => {
+          ? (routeId, regionId, fromPortId, toPortId) => {
               const allowed =
                 this.isRouteSegmentAllowedByForeignEndpointKeepouts(
                   routeId,
+                  regionId,
                   fromPortId,
                   toPortId,
                 )
@@ -2201,6 +2335,13 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       candidateSolver.solve()
       this.rerouteSearchCount += 1
       this.rerouteSearchIterationCount += candidateSolver.iterations
+      this.singleRerouteSearchCount += 1
+      this.singleRerouteSearchIterationCount += candidateSolver.iterations
+      if (!candidateSolver.solved || candidateSolver.failed) {
+        this.singleRerouteFailedSearchCount += 1
+        this.singleRerouteFailedSearchIterationCount +=
+          candidateSolver.iterations
+      }
       const replacementPath =
         candidateSolver.solved && !candidateSolver.failed
           ? candidateSolver.getReplacementPath(routeId)
@@ -2473,10 +2614,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         this,
         this.REROUTE_MAX_ITERATIONS,
         this.hasForeignEndpointKeepouts
-          ? (routeId, fromPortId, toPortId) => {
+          ? (routeId, regionId, fromPortId, toPortId) => {
               const allowed =
                 this.isRouteSegmentAllowedByForeignEndpointKeepouts(
                   routeId,
+                  regionId,
                   fromPortId,
                   toPortId,
                 )
@@ -2596,6 +2738,13 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         candidateSolver.solve()
         this.rerouteSearchCount += 1
         this.rerouteSearchIterationCount += candidateSolver.iterations
+        this.pairRerouteSearchCount += 1
+        this.pairRerouteSearchIterationCount += candidateSolver.iterations
+        if (!candidateSolver.solved || candidateSolver.failed) {
+          this.pairRerouteFailedSearchCount += 1
+          this.pairRerouteFailedSearchIterationCount +=
+            candidateSolver.iterations
+        }
         scoreSolvedCandidate(routeIds, solveOrder)
       }
     }
@@ -2653,6 +2802,91 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     return [...keepoutIndexes]
   }
 
+  private getRegionPortIndex(regionId: RegionId, portId: PortId): number {
+    const incidentRegionIds = this.topology.incidentPortRegion[portId]!
+    if (incidentRegionIds[0] === regionId) {
+      return this.firstIncidentRegionPortIndex[portId]!
+    }
+    if (incidentRegionIds[1] === regionId) {
+      return this.secondIncidentRegionPortIndex[portId]!
+    }
+    const portIndex = this.overflowIncidentRegionPortIndex.get(
+      portId * this.topology.regionCount + regionId,
+    )
+    if (portIndex === undefined) {
+      throw new Error(`Port ${portId} is not incident to region ${regionId}`)
+    }
+    return portIndex
+  }
+
+  private getTerminalKeepoutGeometry(
+    regionId: RegionId,
+    fromPortId: PortId,
+    toPortId: PortId,
+  ): CachedTerminalKeepoutGeometry {
+    const regionPortCount = this.topology.regionIncidentPorts[regionId]!.length
+    const fromPortIndex = this.getRegionPortIndex(regionId, fromPortId)
+    const toPortIndex = this.getRegionPortIndex(regionId, toPortId)
+    const geometryIndexByPortPair =
+      this.terminalKeepoutGeometryIndexByRegion[regionId]!
+    const geometrySlot = fromPortIndex * regionPortCount + toPortIndex
+    const cachedGeometryIndex = geometryIndexByPortPair[geometrySlot]!
+    if (cachedGeometryIndex >= 0) {
+      this.terminalKeepoutGeometryCacheHitCount += 1
+      return this.terminalKeepoutGeometries[cachedGeometryIndex]!
+    }
+
+    const startX = this.topology.portX[fromPortId]!
+    const startY = this.topology.portY[fromPortId]!
+    const startZ = this.topology.portZ[fromPortId]!
+    const endX = this.topology.portX[toPortId]!
+    const endY = this.topology.portY[toPortId]!
+    const endZ = this.topology.portZ[toPortId]!
+    const keepoutIndexes = Int32Array.from(
+      this.queryTerminalKeepoutIndexes(
+        startX,
+        startY,
+        startZ,
+        endX,
+        endY,
+        endZ,
+      ),
+    )
+    const clearances = new Float64Array(keepoutIndexes.length)
+    const violatingKeepoutIndexes: number[] = []
+    const violatingClearances: number[] = []
+    for (let index = 0; index < keepoutIndexes.length; index++) {
+      const keepout = this.terminalKeepouts[keepoutIndexes[index]!]!
+      this.terminalKeepoutExactCheckCount += 1
+      const clearance = getSegmentToTerminalKeepoutClearance({
+        startX,
+        startY,
+        startZ,
+        endX,
+        endY,
+        endZ,
+        keepout,
+      })
+      clearances[index] = clearance
+      if (clearance < 0) {
+        violatingKeepoutIndexes.push(keepoutIndexes[index]!)
+        violatingClearances.push(clearance)
+      }
+    }
+    const geometry = {
+      keepoutIndexes,
+      clearances,
+      violatingKeepoutIndexes: Int32Array.from(violatingKeepoutIndexes),
+      violatingClearances: Float64Array.from(violatingClearances),
+    }
+    const geometryIndex = this.terminalKeepoutGeometries.length
+    this.terminalKeepoutGeometries.push(geometry)
+    geometryIndexByPortPair[geometrySlot] = geometryIndex
+    geometryIndexByPortPair[toPortIndex * regionPortCount + fromPortIndex] =
+      geometryIndex
+    return geometry
+  }
+
   private computeRouteForeignEndpointClearances(
     solver: TinyHyperGraphSolver,
     routeId: RouteId,
@@ -2660,6 +2894,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   ): Float64Array {
     const clearances = new Float64Array(this.terminalKeepouts.length)
     clearances.fill(Number.POSITIVE_INFINITY)
+    if (!this.hasForeignEndpointKeepouts) return clearances
     const routeNetId = this.problem.routeNet[routeId]!
     for (
       let regionId = 0;
@@ -2683,34 +2918,22 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
               permutation,
             )
           : storedToPortId
-        const startX = solver.topology.portX[fromPortId]!
-        const startY = solver.topology.portY[fromPortId]!
-        const startZ = solver.topology.portZ[fromPortId]!
-        const endX = solver.topology.portX[toPortId]!
-        const endY = solver.topology.portY[toPortId]!
-        const endZ = solver.topology.portZ[toPortId]!
-        for (const keepoutIndex of this.queryTerminalKeepoutIndexes(
-          startX,
-          startY,
-          startZ,
-          endX,
-          endY,
-          endZ,
-        )) {
+        const geometry = this.getTerminalKeepoutGeometry(
+          regionId,
+          fromPortId,
+          toPortId,
+        )
+        for (
+          let geometryIndex = 0;
+          geometryIndex < geometry.keepoutIndexes.length;
+          geometryIndex++
+        ) {
+          const keepoutIndex = geometry.keepoutIndexes[geometryIndex]!
           const keepout = this.terminalKeepouts[keepoutIndex]!
           if (keepout.netId === routeNetId) continue
-          this.terminalKeepoutExactCheckCount += 1
           clearances[keepoutIndex] = Math.min(
             clearances[keepoutIndex]!,
-            getSegmentToTerminalKeepoutClearance({
-              startX,
-              startY,
-              startZ,
-              endX,
-              endY,
-              endZ,
-              keepout,
-            }),
+            geometry.clearances[geometryIndex]!,
           )
         }
       }
@@ -2720,6 +2943,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
 
   private isRouteSegmentAllowedByForeignEndpointKeepouts(
     routeId: RouteId,
+    regionId: RegionId,
     fromPortId: PortId,
     toPortId: PortId,
   ): boolean {
@@ -2727,32 +2951,20 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     const baselineClearances =
       this.routeForeignEndpointClearancesByRouteId[routeId]!
     const routeNetId = this.problem.routeNet[routeId]!
-    const startX = this.topology.portX[fromPortId]!
-    const startY = this.topology.portY[fromPortId]!
-    const startZ = this.topology.portZ[fromPortId]!
-    const endX = this.topology.portX[toPortId]!
-    const endY = this.topology.portY[toPortId]!
-    const endZ = this.topology.portZ[toPortId]!
-    for (const keepoutIndex of this.queryTerminalKeepoutIndexes(
-      startX,
-      startY,
-      startZ,
-      endX,
-      endY,
-      endZ,
-    )) {
+    const geometry = this.getTerminalKeepoutGeometry(
+      regionId,
+      fromPortId,
+      toPortId,
+    )
+    for (
+      let geometryIndex = 0;
+      geometryIndex < geometry.violatingKeepoutIndexes.length;
+      geometryIndex++
+    ) {
+      const keepoutIndex = geometry.violatingKeepoutIndexes[geometryIndex]!
       const keepout = this.terminalKeepouts[keepoutIndex]!
       if (keepout.netId === routeNetId) continue
-      this.terminalKeepoutExactCheckCount += 1
-      const clearance = getSegmentToTerminalKeepoutClearance({
-        startX,
-        startY,
-        startZ,
-        endX,
-        endY,
-        endZ,
-        keepout,
-      })
+      const clearance = geometry.violatingClearances[geometryIndex]!
       if (
         clearance + COST_EPSILON <
         Math.min(0, baselineClearances[keepoutIndex]!)
@@ -2828,6 +3040,9 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       this.routeForeignEndpointClearancesByRouteId[routeId] =
         this.computeRouteForeignEndpointClearances(this, routeId)
     }
+    this.routeReplacementSolver?.invalidatePhysicalNeighborCache([
+      ...routeIdSet,
+    ])
   }
 
   private computeRegionMetricsWithoutRoutes(
@@ -3348,6 +3563,9 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       this.routeForeignEndpointClearancesByRouteId[routeId] =
         foreignEndpointClearances
     }
+    this.routeReplacementSolver?.invalidatePhysicalNeighborCache(
+      mutation.replacementRouteMetrics.map(({ routeId }) => routeId),
+    )
   }
 
   private getIntersectionOwnerId(routeId: RouteId): number {
@@ -3422,10 +3640,27 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       terminalKeepoutBroadPhaseCandidateCount:
         this.terminalKeepoutBroadPhaseCandidateCount,
       terminalKeepoutExactCheckCount: this.terminalKeepoutExactCheckCount,
+      terminalKeepoutGeometryCacheHitCount:
+        this.terminalKeepoutGeometryCacheHitCount,
+      terminalKeepoutGeometryCacheSize: this.terminalKeepoutGeometries.length,
+      terminalKeepoutPhysicalNeighborCacheHitCount:
+        this.routeReplacementSolver?.physicalNeighborCacheHitCount ?? 0,
+      terminalKeepoutPhysicalNeighborCacheMissCount:
+        this.routeReplacementSolver?.physicalNeighborCacheMissCount ?? 0,
       rejectedCrossLayerSwapCount: this.rejectedCrossLayerSwapCount,
       prunedRerouteSearchCount: this.prunedRerouteSearchCount,
       rerouteSearchIterationCount: this.rerouteSearchIterationCount,
       rerouteSearchCount: this.rerouteSearchCount,
+      singleRerouteSearchIterationCount: this.singleRerouteSearchIterationCount,
+      singleRerouteSearchCount: this.singleRerouteSearchCount,
+      singleRerouteFailedSearchIterationCount:
+        this.singleRerouteFailedSearchIterationCount,
+      singleRerouteFailedSearchCount: this.singleRerouteFailedSearchCount,
+      pairRerouteSearchIterationCount: this.pairRerouteSearchIterationCount,
+      pairRerouteSearchCount: this.pairRerouteSearchCount,
+      pairRerouteFailedSearchIterationCount:
+        this.pairRerouteFailedSearchIterationCount,
+      pairRerouteFailedSearchCount: this.pairRerouteFailedSearchCount,
       reusedRerouteCandidateCount: this.reusedRerouteCandidateCount,
       optimizationStopReason: reason,
       finalPeakRegionIds,

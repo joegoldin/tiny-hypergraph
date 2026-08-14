@@ -537,6 +537,19 @@ test("reroute search explores around terminal keepouts instead of accepting an u
     0,
   )
   expect(solver.stats.rejectedRerouteEndpointKeepoutCount).toBe(0)
+  expect(solver.stats.terminalKeepoutGeometryCacheHitCount).toBeGreaterThan(0)
+  expect(solver.stats.terminalKeepoutGeometryCacheSize).toBe(
+    solver.stats.terminalKeepoutBroadPhaseQueryCount,
+  )
+  expect(solver.stats.terminalKeepoutExactCheckCount).toBe(
+    solver.stats.terminalKeepoutBroadPhaseCandidateCount,
+  )
+  expect(
+    solver.stats.terminalKeepoutPhysicalNeighborCacheMissCount,
+  ).toBeGreaterThan(0)
+  expect(
+    solver.stats.terminalKeepoutPhysicalNeighborCacheHitCount,
+  ).toBeGreaterThan(0)
 })
 
 test("unravel solver reuses valid paths before repeating graph-wide A*", () => {

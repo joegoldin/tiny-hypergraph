@@ -778,8 +778,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       return
     }
 
-    const neighbors =
-      topology.regionIncidentPorts[currentCandidate.nextRegionId]
+    const neighbors = this.getCandidateNeighborPortIds(currentCandidate)
 
     for (const neighborPortId of neighbors) {
       const assignedNetId = state.portAssignment[neighborPortId]
@@ -845,6 +844,12 @@ export class TinyHyperGraphSolver extends BaseSolver {
       this.setCandidateBestCost(candidateHopId, g)
       state.candidateQueue.queue(newCandidate)
     }
+  }
+
+  protected getCandidateNeighborPortIds(
+    currentCandidate: Candidate,
+  ): readonly PortId[] {
+    return this.topology.regionIncidentPorts[currentCandidate.nextRegionId]!
   }
 
   resetCandidateBestCosts() {
