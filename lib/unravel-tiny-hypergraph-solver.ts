@@ -4520,7 +4520,10 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     this.state.regionSegments = mutation.replacementState.regionSegments
     this.state.regionIntersectionCaches =
       mutation.replacementState.regionIntersectionCaches
-    this.state.regionCongestionCost.fill(0)
+    this.state.regionCongestionCost = new Float64Array(
+      this.inputSolver.state.regionCongestionCost,
+    )
+    this.state.ripCount = this.inputSolver.state.ripCount
     this.state.currentRouteId = undefined
     this.state.currentRouteNetId = undefined
     this.state.unroutedRoutes = []
@@ -4570,9 +4573,58 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     this.state.currentRouteNetId = undefined
   }
 
+  private restoreInputStateAfterUnproductivePlateauSearch() {
+    this.state.portAssignment = new Int32Array(
+      this.inputSolver.state.portAssignment,
+    )
+    const restoredRegionSegments = this.inputSolver.state.regionSegments.map(
+      (segments) =>
+        segments.map(
+          ([routeId, fromPortId, toPortId]) =>
+            [routeId, fromPortId, toPortId] as [RouteId, PortId, PortId],
+        ),
+    )
+    this.state.regionSegments = restoredRegionSegments.map((segments) =>
+      segments.map(
+        ([routeId, fromPortId, toPortId]) =>
+          [routeId, fromPortId, toPortId] as [RouteId, PortId, PortId],
+      ),
+    )
+    this.state.regionCongestionCost.fill(0)
+    this.state.currentRouteId = undefined
+    this.state.currentRouteNetId = undefined
+    this.state.unroutedRoutes = []
+    this.state.candidateQueue.clear()
+    this.resetCandidateBestCosts()
+    this.state.goalPortId = -1
+
+    for (let regionId = 0; regionId < this.topology.regionCount; regionId++) {
+      this.rebuildRegionCache(regionId)
+    }
+    const restored = this.summarizeSolverState(this)
+    // Cache rebuilding uses canonical route-id order. The detailed router also
+    // consumes assignment order, so restore that byte-for-byte after scoring.
+    this.state.regionSegments = restoredRegionSegments
+    this.currentSummary = restored.summary
+    this.routingRiskByRegion.set(restored.routingRiskByRegion)
+    this.segmentRoutingRiskByRegion.set(restored.segmentRoutingRiskByRegion)
+    this.downstreamRiskByRegion.set(restored.downstreamRiskByRegion)
+    this.segmentLengthByRegion.set(restored.segmentLengthByRegion)
+    this.recomputeRouteMetrics(
+      Array.from({ length: this.problem.routeCount }, (_, routeId) => routeId),
+    )
+  }
+
   private finishOptimization(
     reason: "local_optimum" | "mutation_limit" | "reroute_limit",
   ) {
+    const rolledBackPlateauMutations =
+      this.acceptedMutationCount > 0 &&
+      this.currentSummary.maxRegionCost >=
+        this.initialSummary.maxRegionCost - COST_EPSILON
+    if (rolledBackPlateauMutations) {
+      this.restoreInputStateAfterUnproductivePlateauSearch()
+    }
     const finalPeakRegionIds = this.state.regionIntersectionCaches
       .map((cache, regionId) => ({
         regionId,
@@ -4655,6 +4707,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       pairRerouteFailedSearchCount: this.pairRerouteFailedSearchCount,
       reusedRerouteCandidateCount: this.reusedRerouteCandidateCount,
       optimizationStopReason: reason,
+      rolledBackPlateauMutations,
       finalPeakRegionIds,
       finalPeakRouteIds,
       optimized:

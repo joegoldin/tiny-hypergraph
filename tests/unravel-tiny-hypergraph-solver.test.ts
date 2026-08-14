@@ -169,8 +169,10 @@ const createSolvedSolverWithAlternatePath = () => {
   return solver
 }
 
-const createSolvedSolverWithIndependentAlternatePaths = () => {
-  const source = createSolvedSolverWithAlternatePath()
+const duplicateSolvedSolver = (
+  source: TinyHyperGraphSolver,
+  coordinateOffset = 100,
+) => {
   const portCount = source.topology.portCount * 2
   const regionCount = source.topology.regionCount * 2
   const routeCount = source.problem.routeCount * 2
@@ -199,7 +201,7 @@ const createSolvedSolverWithIndependentAlternatePaths = () => {
     ]),
     regionCenterX: new Float64Array([
       ...source.topology.regionCenterX,
-      ...Array.from(source.topology.regionCenterX, (x) => x + 100),
+      ...Array.from(source.topology.regionCenterX, (x) => x + coordinateOffset),
     ]),
     regionCenterY: new Float64Array([
       ...source.topology.regionCenterY,
@@ -215,7 +217,7 @@ const createSolvedSolverWithIndependentAlternatePaths = () => {
     ]),
     portX: new Float64Array([
       ...source.topology.portX,
-      ...Array.from(source.topology.portX, (x) => x + 100),
+      ...Array.from(source.topology.portX, (x) => x + coordinateOffset),
     ]),
     portY: new Float64Array([
       ...source.topology.portY,
@@ -277,6 +279,9 @@ const createSolvedSolverWithIndependentAlternatePaths = () => {
   solver.solved = true
   return solver
 }
+
+const createSolvedSolverWithIndependentAlternatePaths = () =>
+  duplicateSolvedSolver(createSolvedSolverWithAlternatePath())
 
 const createSolvedSolverRequiringPairedReroutes = () => {
   const solver = createSolvedSolverWithIndependentAlternatePaths()
@@ -367,6 +372,27 @@ test("unravel solver accepts only beneficial boundary mutations", () => {
   expect(repeatedSolver.state.regionSegments).toEqual(
     solver.state.regionSegments,
   )
+})
+
+test("unravel solver rolls back a plateau search without a peak improvement", () => {
+  const inputSolver = duplicateSolvedSolver(createCrossedSolvedSolver(), 10)
+  inputSolver.state.regionSegments[0]!.reverse()
+  const inputRegionSegments = structuredClone(inputSolver.state.regionSegments)
+  const inputOutput = inputSolver.getOutput()
+  const initialMaxRegionCost = getMaxRegionCost(inputSolver)
+  const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
+    FIXED_ROUTE_IDS: [2, 3],
+    MAX_HOT_REGIONS: 0,
+  })
+
+  solver.solve()
+
+  expect(solver.stats.acceptedMutationCount).toBeGreaterThan(0)
+  expect(solver.stats.rolledBackPlateauMutations).toBe(true)
+  expect(getMaxRegionCost(solver)).toBe(initialMaxRegionCost)
+  expect(solver.state.regionSegments).toEqual(inputRegionSegments)
+  expect(solver.getOutput()).toEqual(inputOutput)
+  expect(solver.stats.optimized).toBe(false)
 })
 
 test("unravel solver permits added wirelength without increasing occupancy", () => {
