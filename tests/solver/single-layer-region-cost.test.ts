@@ -6,6 +6,7 @@ import {
 } from "lib/index"
 import {
   computeRegionCost,
+  computeRoutingRiskRegionCost,
   DEFAULT_MIN_VIA_PAD_DIAMETER,
   isKnownSingleLayerMask,
   TRACE_VIA_MARGIN,
@@ -138,4 +139,20 @@ test("region cost uses min via pad diameter plus trace-via margin", () => {
     ((DEFAULT_MIN_VIA_PAD_DIAMETER + TRACE_VIA_MARGIN) ** 2 * traceCountMult) /
       area,
   )
+})
+
+test("routing-risk region cost follows the downstream tuned-capacity model", () => {
+  const cost = computeRoutingRiskRegionCost(4, 2, 2, 1, 3, 0, 0.3)
+  const estimatedVias = 2 * 0.82 + 1 * 0.2 + 3 * 0.41
+  const usedCapacity = (estimatedVias / 2) ** 1.1
+  const minimumSide = 2
+  const effectiveSpan = Math.sqrt(8)
+  const viaRatioFactor = Math.min(
+    1.2,
+    Math.max(0.85, (minimumSide / 0.5) ** 0.05),
+  )
+  const totalCapacity = ((effectiveSpan * viaRatioFactor) / 0.35 / 2) ** 1.1
+
+  expect(cost).toBeCloseTo(usedCapacity / totalCapacity)
+  expect(computeRoutingRiskRegionCost(4, 2, 1, 0, 0, 1 << 2)).toBe(1)
 })

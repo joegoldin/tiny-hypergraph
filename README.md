@@ -34,10 +34,11 @@ improves the lexicographic `(maximum region cost, total region cost)` objective.
 It first considers boundary-port swaps (including swaps with unused capacity),
 then replaces individual routes that cross the hottest region under several
 congestion weights. A mutation is committed only when it improves the complete
-solved graph. Replacement searches prioritize the routes contributing most to
-the hot-region cost and reject routes that add more than four region segments
-over their input path, preventing a local congestion win from creating an
-unbounded global detour. The original solution remains a safe fallback.
+solved graph. Replacement searches use an admissible route-removal lower bound
+to prioritize promising routes and accept the first improving route in that
+order. Routes that add more than four region segments over their input path are
+rejected, preventing a local congestion win from creating an unbounded global
+detour. The original solution remains a safe fallback.
 
 ```ts
 import {
@@ -52,9 +53,7 @@ if (!solver.solved || solver.failed) {
   throw new Error(solver.error ?? "Solver did not finish successfully")
 }
 
-const optimizer = new UnravelTinyHyperGraphSolver(solver, {
-  TARGET_MAX_REGION_COST_REDUCTION_RATIO: 0.51,
-})
+const optimizer = new UnravelTinyHyperGraphSolver(solver)
 optimizer.solve()
 
 const optimizedGraph = optimizer.getOutput()
@@ -63,9 +62,14 @@ const optimizedGraph = optimizer.getOutput()
 The section pipeline runs this as its final `optimizeRegionCosts` stage. Useful
 statistics include `initialMaxRegionCost`, `finalMaxRegionCost`,
 `acceptedMutationCount`, `evaluatedMutationCount`, and
-`rejectedRerouteDetourCount`. Set `MAX_REROUTE_SEGMENT_INCREASE` to tune the
+`rejectedRerouteDetourCount`, `rerouteSearchCount`, and
+`rerouteSearchIterationCount`. Set `MAX_REROUTE_SEGMENT_INCREASE` to tune the
 per-route detour ceiling, or `MAX_MUTATIONS: 0` to retain the solved input
-without running post-solve mutations.
+without running post-solve mutations. Integrations whose downstream router
+uses tuned capacity-node failure estimates can set
+`REGION_COST_MODEL: "routing-risk"`; that model distinguishes same-layer and
+transition-pair crossings and ignores crossings between independent fixed
+layers.
 
 Existing routing can be preloaded through the standard region assignments:
 

@@ -1,5 +1,30 @@
 import type { DynamicAnglePair, DynamicAnglePairArrays } from "./types"
 
+export type RegionCostModel = "legacy" | "routing-risk"
+
+export const classifyIntersectionLayerMasks = (
+  firstLayerMask: number,
+  secondLayerMask: number,
+  regionCostModel: RegionCostModel,
+): "same-layer" | "transition-pair" | undefined => {
+  if (regionCostModel === "legacy") {
+    return (firstLayerMask & secondLayerMask) !== 0
+      ? "same-layer"
+      : "transition-pair"
+  }
+
+  const firstChangesLayer =
+    firstLayerMask > 0 && (firstLayerMask & (firstLayerMask - 1)) !== 0
+  const secondChangesLayer =
+    secondLayerMask > 0 && (secondLayerMask & (secondLayerMask - 1)) !== 0
+  if (firstChangesLayer || secondChangesLayer) {
+    return firstChangesLayer && secondChangesLayer
+      ? "transition-pair"
+      : undefined
+  }
+  return (firstLayerMask & secondLayerMask) !== 0 ? "same-layer" : undefined
+}
+
 export const createDynamicAnglePairArrays = (
   anglePairs: Array<DynamicAnglePair>,
 ): DynamicAnglePairArrays => {
@@ -31,6 +56,7 @@ export const countNewIntersectionsWithValues = (
   newGreaterAngle: number,
   newLayerMask: number,
   entryExitLayerChanges: number,
+  regionCostModel: RegionCostModel = "legacy",
 ): [number, number, number] => {
   const { netIds, lesserAngles, greaterAngles, layerMasks } = existingPairs
 
@@ -47,9 +73,14 @@ export const countNewIntersectionsWithValues = (
 
     if (lesserAngleIsInsideInterval === greaterAngleIsInsideInterval) continue
 
-    if ((newLayerMask & layerMasks[i]) !== 0) {
+    const intersectionKind = classifyIntersectionLayerMasks(
+      newLayerMask,
+      layerMasks[i]!,
+      regionCostModel,
+    )
+    if (intersectionKind === "same-layer") {
       sameLayerIntersectionCount++
-    } else {
+    } else if (intersectionKind === "transition-pair") {
       crossingLayerIntersectionCount++
     }
   }
@@ -64,6 +95,7 @@ export const countNewIntersectionsWithValues = (
 export const countNewIntersections = (
   existingPairs: DynamicAnglePairArrays,
   newPair: DynamicAnglePair,
+  regionCostModel: RegionCostModel = "legacy",
 ): [number, number, number] => {
   const [newNet, newLesserAngle, newZ1, newGreaterAngle, newZ2] = newPair
   return countNewIntersectionsWithValues(
@@ -73,6 +105,7 @@ export const countNewIntersections = (
     newGreaterAngle,
     (1 << newZ1) | (1 << newZ2),
     newZ1 !== newZ2 ? 1 : 0,
+    regionCostModel,
   )
 }
 

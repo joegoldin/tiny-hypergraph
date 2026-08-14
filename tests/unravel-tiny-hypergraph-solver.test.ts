@@ -5,6 +5,8 @@ import {
   type TinyHyperGraphTopology,
   UnravelTinyHyperGraphSolver,
 } from "lib/index"
+import { loadSerializedHyperGraph } from "lib/compat/loadSerializedHyperGraph"
+import { TinyHyperGraphSectionSolver } from "lib/section-solver"
 import type { PortId, RegionId, RouteId } from "lib/types"
 
 const createCrossedSolvedSolver = () => {
@@ -82,13 +84,13 @@ const getTotalSegmentCount = (solver: TinyHyperGraphSolver) =>
 
 const createSolvedSolverWithAlternatePath = () => {
   const topology: TinyHyperGraphTopology = {
-    portCount: 11,
-    regionCount: 11,
+    portCount: 13,
+    regionCount: 13,
     regionIncidentPorts: [
       [0, 1, 3],
       [1, 2, 8, 9],
       [2, 5, 6],
-      [3, 4],
+      [3, 4, 11, 12],
       [4, 5],
       [7, 8],
       [9, 10],
@@ -96,6 +98,8 @@ const createSolvedSolverWithAlternatePath = () => {
       [6],
       [7],
       [10],
+      [11],
+      [12],
     ],
     incidentPortRegion: [
       [0, 7],
@@ -109,28 +113,30 @@ const createSolvedSolverWithAlternatePath = () => {
       [5, 1],
       [1, 6],
       [6, 10],
+      [3, 11],
+      [3, 12],
     ],
-    regionWidth: new Float64Array(11).fill(1),
-    regionHeight: new Float64Array(11).fill(1),
-    regionCenterX: new Float64Array(11),
-    regionCenterY: new Float64Array(11),
+    regionWidth: new Float64Array(13).fill(1),
+    regionHeight: new Float64Array(13).fill(1),
+    regionCenterX: new Float64Array(13),
+    regionCenterY: new Float64Array(13),
     portAngleForRegion1: new Int32Array([
-      0, 9000, 18000, 18000, 0, 0, 18000, 0, 9000, 27000, 18000,
+      0, 9000, 18000, 18000, 0, 0, 18000, 0, 9000, 27000, 18000, 9000, 9000,
     ]),
     portAngleForRegion2: new Int32Array([
-      0, 0, 0, 0, 18000, 9000, 0, 0, 9000, 0, 0,
+      0, 0, 0, 0, 18000, 9000, 0, 0, 9000, 0, 0, 0, 0,
     ]),
-    portX: new Float64Array(11),
-    portY: new Float64Array(11),
-    portZ: new Int32Array(11),
+    portX: new Float64Array(13),
+    portY: new Float64Array(13),
+    portZ: new Int32Array(13),
   }
   const problem: TinyHyperGraphProblem = {
-    routeCount: 2,
-    portSectionMask: new Int8Array(11).fill(1),
-    routeStartPort: new Int32Array([0, 7]),
-    routeEndPort: new Int32Array([6, 10]),
-    routeNet: new Int32Array([0, 1]),
-    regionNetId: new Int32Array(11).fill(-1),
+    routeCount: 3,
+    portSectionMask: new Int8Array(13).fill(1),
+    routeStartPort: new Int32Array([0, 7, 11]),
+    routeEndPort: new Int32Array([6, 10, 12]),
+    routeNet: new Int32Array([0, 1, 2]),
+    regionNetId: new Int32Array(13).fill(-1),
   }
   const solver = new TinyHyperGraphSolver(topology, problem)
   const addSegment = (
@@ -153,6 +159,7 @@ const createSolvedSolverWithAlternatePath = () => {
   addSegment(5, 1, 7, 8)
   addSegment(1, 1, 8, 9)
   addSegment(6, 1, 9, 10)
+  addSegment(3, 2, 11, 12)
   solver.state.currentRouteNetId = undefined
   solver.solved = true
 
@@ -212,7 +219,19 @@ test("unravel solver replaces a route through the hottest region", () => {
   expect(getMaxRegionCost(inputSolver)).toBeGreaterThan(0)
   expect(getMaxRegionCost(solver)).toBe(0)
   expect(solver.stats.lastMutationKind).toBe("reroute")
-  expect(solver.getOutput().solvedRoutes).toHaveLength(2)
+  expect(solver.state.regionSegments[3]!.map(([routeId]) => routeId)).toEqual([
+    0, 2,
+  ])
+
+  const output = solver.getOutput()
+  expect(output.solvedRoutes).toHaveLength(3)
+  const { topology, problem, solution } = loadSerializedHyperGraph(output)
+  const replaySolver = new TinyHyperGraphSectionSolver(
+    topology,
+    problem,
+    solution,
+  ).baselineSolver
+  expect(getMaxRegionCost(replaySolver)).toBe(getMaxRegionCost(solver))
 })
 
 test("unravel solver rejects a cost-improving route detour at a zero ceiling", () => {

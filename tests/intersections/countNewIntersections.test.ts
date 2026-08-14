@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { countIntersectionsFromAnglePairsDynamic } from "lib/countIntersectionsFromAnglePairsDynamic"
 import {
+  classifyIntersectionLayerMasks,
   countNewIntersections,
   createDynamicAnglePairArrays,
 } from "lib/countNewIntersections"
@@ -95,4 +96,21 @@ test("countNewIntersections matches the incremental delta from the full counter"
       ],
     })
   }
+})
+
+test("routing-risk classification matches downstream crossing categories", () => {
+  const z0 = 1 << 0
+  const z1 = 1 << 1
+  const transition = z0 | z1
+
+  expect(classifyIntersectionLayerMasks(z0, z0, "routing-risk")).toBe(
+    "same-layer",
+  )
+  expect(
+    classifyIntersectionLayerMasks(transition, transition, "routing-risk"),
+  ).toBe("transition-pair")
+  expect(classifyIntersectionLayerMasks(z0, z1, "routing-risk")).toBeUndefined()
+  expect(
+    classifyIntersectionLayerMasks(transition, z0, "routing-risk"),
+  ).toBeUndefined()
 })

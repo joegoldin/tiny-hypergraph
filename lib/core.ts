@@ -3,10 +3,14 @@ import type { GraphicsObject } from "graphics-debug"
 import { convertToSerializedHyperGraph } from "./compat/convertToSerializedHyperGraph"
 import {
   computeRegionCost,
+  computeRoutingRiskRegionCost,
   DEFAULT_MIN_VIA_PAD_DIAMETER,
   isKnownSingleLayerMask,
 } from "./computeRegionCost"
-import { countNewIntersectionsWithValues } from "./countNewIntersections"
+import {
+  countNewIntersectionsWithValues,
+  type RegionCostModel,
+} from "./countNewIntersections"
 import {
   applyInitialAssignments,
   type TinyHyperGraphInitialAssignment,
@@ -257,6 +261,7 @@ export interface TinyHyperGraphSolverOptions {
   RIP_CONGESTION_REGION_COST_FACTOR?: number
   /** Opt-in quadratic penalty for concentrating traces in low-capacity regions. */
   TRACE_DENSITY_COST_FACTOR?: number
+  REGION_COST_MODEL?: RegionCostModel
   USE_LAZY_ROUTE_HEURISTIC?: boolean
   USE_SPARSE_CANDIDATE_STORAGE?: boolean
   MAX_ITERATIONS?: number
@@ -304,6 +309,7 @@ export interface TinyHyperGraphSolverOptionTarget {
   RIP_THRESHOLD_RAMP_ATTEMPTS: number
   RIP_CONGESTION_REGION_COST_FACTOR: number
   TRACE_DENSITY_COST_FACTOR?: number
+  REGION_COST_MODEL?: RegionCostModel
   USE_LAZY_ROUTE_HEURISTIC?: boolean
   USE_SPARSE_CANDIDATE_STORAGE?: boolean
   MAX_ITERATIONS: number
@@ -359,6 +365,9 @@ export const applyTinyHyperGraphSolverOptions = (
       0,
       options.TRACE_DENSITY_COST_FACTOR,
     )
+  }
+  if (options.REGION_COST_MODEL !== undefined) {
+    solver.REGION_COST_MODEL = options.REGION_COST_MODEL
   }
   if (options.USE_LAZY_ROUTE_HEURISTIC !== undefined) {
     solver.USE_LAZY_ROUTE_HEURISTIC = options.USE_LAZY_ROUTE_HEURISTIC
@@ -443,6 +452,7 @@ export const getTinyHyperGraphSolverOptions = (
   RIP_THRESHOLD_RAMP_ATTEMPTS: solver.RIP_THRESHOLD_RAMP_ATTEMPTS,
   RIP_CONGESTION_REGION_COST_FACTOR: solver.RIP_CONGESTION_REGION_COST_FACTOR,
   TRACE_DENSITY_COST_FACTOR: solver.TRACE_DENSITY_COST_FACTOR,
+  REGION_COST_MODEL: solver.REGION_COST_MODEL,
   USE_LAZY_ROUTE_HEURISTIC: solver.USE_LAZY_ROUTE_HEURISTIC,
   USE_SPARSE_CANDIDATE_STORAGE: solver.USE_SPARSE_CANDIDATE_STORAGE,
   MAX_ITERATIONS: solver.MAX_ITERATIONS,
@@ -516,6 +526,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
   RIP_CONGESTION_REGION_COST_FACTOR = 0.1
   TRACE_DENSITY_COST_FACTOR = 0
+  REGION_COST_MODEL: RegionCostModel = "legacy"
   USE_LAZY_ROUTE_HEURISTIC = false
   USE_SPARSE_CANDIDATE_STORAGE = false
 
@@ -967,6 +978,26 @@ export class TinyHyperGraphSolver extends BaseSolver {
     numEntryExitChanges: number,
     traceCount: number,
   ): number {
+    if (this.REGION_COST_MODEL === "routing-risk") {
+      const metadata = this.topology.regionMetadata?.[regionId]
+      if (
+        typeof metadata === "object" &&
+        metadata !== null &&
+        "_containsTarget" in metadata &&
+        metadata._containsTarget === true
+      ) {
+        return 0
+      }
+      return computeRoutingRiskRegionCost(
+        this.topology.regionWidth[regionId],
+        this.topology.regionHeight[regionId],
+        numSameLayerIntersections,
+        numCrossLayerIntersections,
+        numEntryExitChanges,
+        this.topology.regionAvailableZMask?.[regionId] ?? 0,
+        this.minViaPadDiameter,
+      )
+    }
     return computeRegionCost(
       this.topology.regionWidth[regionId],
       this.topology.regionHeight[regionId],
@@ -1032,6 +1063,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       segmentGeometry.greaterAngle,
       segmentGeometry.layerMask,
       segmentGeometry.entryExitLayerChanges,
+      this.REGION_COST_MODEL,
     )
     const nextLength = regionCache.netIds.length + 1
 
@@ -1685,6 +1717,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       greaterAngle,
       layerMask,
       entryExitLayerChanges,
+      this.REGION_COST_MODEL,
     )
 
     if (
