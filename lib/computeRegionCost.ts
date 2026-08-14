@@ -2,7 +2,7 @@ export const DEFAULT_MIN_VIA_PAD_DIAMETER = 0.3
 export const TRACE_VIA_MARGIN = 0.15
 const traceWidth = 0.1
 const routedTraceWidth = 0.15
-const IMPOSSIBLE_SINGLE_LAYER_INTERSECTION_COST = 10
+export const IMPOSSIBLE_SINGLE_LAYER_INTERSECTION_COST = 10
 
 export const isKnownSingleLayerMask = (regionAvailableZMask: number) =>
   regionAvailableZMask > 0 &&

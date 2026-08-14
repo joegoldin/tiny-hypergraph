@@ -63,22 +63,26 @@ export const createDynamicAnglePairArrays = (
   }
 }
 
-export const countNewIntersectionsWithValues = (
+export const countNewIntersectionsWithValuesInto = (
   existingPairs: DynamicAnglePairArrays,
   newNet: number,
   newLesserAngle: number,
   newGreaterAngle: number,
   newLayerMask: number,
   entryExitLayerChanges: number,
-  regionCostModel: RegionCostModel = "legacy",
-): [number, number, number] => {
+  regionCostModel: RegionCostModel,
+  output: Int32Array | [number, number, number],
+): void => {
   const { netIds, lesserAngles, greaterAngles, layerMasks } = existingPairs
 
   // Downstream risk groups all points for one connection into one chord and
   // uses its first pair. A route that re-enters a region therefore must not
   // add another transition or crossing to that region's risk estimate.
   if (regionCostModel === "routing-risk" && netIds.includes(newNet)) {
-    return [0, 0, 0]
+    output[0] = 0
+    output[1] = 0
+    output[2] = 0
+    return
   }
 
   let sameLayerIntersectionCount = 0
@@ -86,42 +90,39 @@ export const countNewIntersectionsWithValues = (
   const newChangesLayer =
     newLayerMask > 0 && (newLayerMask & (newLayerMask - 1)) !== 0
 
-  for (let i = 0; i < netIds.length; i++) {
-    if (newNet === netIds[i]) continue
-
-    // Chords meeting at a shared boundary point can join without crossing.
-    // The downstream circle counter explicitly excludes these pairs.
-    if (
-      regionCostModel === "routing-risk" &&
-      (newLesserAngle === lesserAngles[i] ||
-        newLesserAngle === greaterAngles[i] ||
-        newGreaterAngle === lesserAngles[i] ||
-        newGreaterAngle === greaterAngles[i])
-    ) {
-      continue
-    }
-
-    const lesserAngleIsInsideInterval =
-      newLesserAngle < lesserAngles[i] && lesserAngles[i] < newGreaterAngle
-    const greaterAngleIsInsideInterval =
-      newLesserAngle < greaterAngles[i] && greaterAngles[i] < newGreaterAngle
-
-    if (lesserAngleIsInsideInterval === greaterAngleIsInsideInterval) continue
-
-    const existingLayerMask = layerMasks[i]!
-    if (regionCostModel === "legacy") {
+  if (regionCostModel === "legacy") {
+    for (let i = 0; i < netIds.length; i++) {
+      if (newNet === netIds[i]) continue
+      const lesserAngleIsInsideInterval =
+        newLesserAngle < lesserAngles[i]! && lesserAngles[i]! < newGreaterAngle
+      const greaterAngleIsInsideInterval =
+        newLesserAngle < greaterAngles[i]! &&
+        greaterAngles[i]! < newGreaterAngle
+      if (lesserAngleIsInsideInterval === greaterAngleIsInsideInterval) {
+        continue
+      }
+      const existingLayerMask = layerMasks[i]!
       if ((newLayerMask & existingLayerMask) !== 0) {
         sameLayerIntersectionCount++
       } else {
         crossingLayerIntersectionCount++
       }
-      continue
     }
-
-    const existingChangesLayer =
-      existingLayerMask > 0 &&
-      (existingLayerMask & (existingLayerMask - 1)) !== 0
-    if (regionCostModel === "routing-complexity") {
+  } else if (regionCostModel === "routing-complexity") {
+    for (let i = 0; i < netIds.length; i++) {
+      if (newNet === netIds[i]) continue
+      const lesserAngleIsInsideInterval =
+        newLesserAngle < lesserAngles[i]! && lesserAngles[i]! < newGreaterAngle
+      const greaterAngleIsInsideInterval =
+        newLesserAngle < greaterAngles[i]! &&
+        greaterAngles[i]! < newGreaterAngle
+      if (lesserAngleIsInsideInterval === greaterAngleIsInsideInterval) {
+        continue
+      }
+      const existingLayerMask = layerMasks[i]!
+      const existingChangesLayer =
+        existingLayerMask > 0 &&
+        (existingLayerMask & (existingLayerMask - 1)) !== 0
       if (newChangesLayer && existingChangesLayer) {
         crossingLayerIntersectionCount++
       } else if (
@@ -131,23 +132,68 @@ export const countNewIntersectionsWithValues = (
       ) {
         sameLayerIntersectionCount++
       }
-      continue
     }
-
-    if (newChangesLayer || existingChangesLayer) {
-      if (newChangesLayer && existingChangesLayer) {
-        crossingLayerIntersectionCount++
+  } else {
+    for (let i = 0; i < netIds.length; i++) {
+      if (newNet === netIds[i]) continue
+      // Chords meeting at a shared boundary point can join without crossing.
+      // The downstream circle counter explicitly excludes these pairs.
+      if (
+        newLesserAngle === lesserAngles[i] ||
+        newLesserAngle === greaterAngles[i] ||
+        newGreaterAngle === lesserAngles[i] ||
+        newGreaterAngle === greaterAngles[i]
+      ) {
+        continue
       }
-    } else if ((newLayerMask & existingLayerMask) !== 0) {
-      sameLayerIntersectionCount++
+      const lesserAngleIsInsideInterval =
+        newLesserAngle < lesserAngles[i]! && lesserAngles[i]! < newGreaterAngle
+      const greaterAngleIsInsideInterval =
+        newLesserAngle < greaterAngles[i]! &&
+        greaterAngles[i]! < newGreaterAngle
+      if (lesserAngleIsInsideInterval === greaterAngleIsInsideInterval) {
+        continue
+      }
+      const existingLayerMask = layerMasks[i]!
+      const existingChangesLayer =
+        existingLayerMask > 0 &&
+        (existingLayerMask & (existingLayerMask - 1)) !== 0
+      if (newChangesLayer || existingChangesLayer) {
+        if (newChangesLayer && existingChangesLayer) {
+          crossingLayerIntersectionCount++
+        }
+      } else if ((newLayerMask & existingLayerMask) !== 0) {
+        sameLayerIntersectionCount++
+      }
     }
   }
 
-  return [
-    sameLayerIntersectionCount,
-    crossingLayerIntersectionCount,
+  output[0] = sameLayerIntersectionCount
+  output[1] = crossingLayerIntersectionCount
+  output[2] = entryExitLayerChanges
+}
+
+export const countNewIntersectionsWithValues = (
+  existingPairs: DynamicAnglePairArrays,
+  newNet: number,
+  newLesserAngle: number,
+  newGreaterAngle: number,
+  newLayerMask: number,
+  entryExitLayerChanges: number,
+  regionCostModel: RegionCostModel = "legacy",
+): [number, number, number] => {
+  const output: [number, number, number] = [0, 0, 0]
+  countNewIntersectionsWithValuesInto(
+    existingPairs,
+    newNet,
+    newLesserAngle,
+    newGreaterAngle,
+    newLayerMask,
     entryExitLayerChanges,
-  ]
+    regionCostModel,
+    output,
+  )
+  return output
 }
 
 export const countNewIntersections = (

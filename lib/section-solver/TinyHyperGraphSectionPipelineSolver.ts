@@ -397,14 +397,24 @@ export class TinyHyperGraphSectionPipelineSolver extends BasePipelineSolver<Tiny
   > {
     const sectionSolver =
       this.getSolver<TinyHyperGraphSectionSolver>("optimizeSection")
-    if (!sectionSolver?.solved || sectionSolver.failed) {
-      throw new Error("optimizeSection did not produce a solved solver")
+    if (sectionSolver) {
+      if (!sectionSolver.solved || sectionSolver.failed) {
+        throw new Error("optimizeSection did not produce a solved solver")
+      }
+      return [
+        sectionSolver.getSolvedSolver(),
+        this.inputProblem.unravelSolverOptions,
+      ]
     }
 
-    return [
-      sectionSolver.getSolvedSolver(),
-      this.inputProblem.unravelSolverOptions,
-    ]
+    // Integrations with structurally fixed assignments may omit the mutable
+    // section search. Region optimization can still operate on the solved
+    // graph as long as those routes are identified through FIXED_ROUTE_IDS.
+    const solveGraphSolver = this.getSolver<TinyHyperGraphSolver>("solveGraph")
+    if (!solveGraphSolver?.solved || solveGraphSolver.failed) {
+      throw new Error("solveGraph did not produce a solved solver")
+    }
+    return [solveGraphSolver, this.inputProblem.unravelSolverOptions]
   }
 
   getSectionStageParams(): [

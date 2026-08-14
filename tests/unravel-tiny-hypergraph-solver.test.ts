@@ -369,6 +369,30 @@ test("unravel solver accepts only beneficial boundary mutations", () => {
   )
 })
 
+test("unravel solver permits added length only when physical risk also falls", () => {
+  const inputSolver = createCrossedSolvedSolver()
+  // Crossing cost is angular, so preserve the same solved crossing while
+  // making its untwisted boundary assignment physically longer.
+  inputSolver.topology.portY[2] = 10
+  inputSolver.topology.portY[3] = -10
+  const initialMaxRegionCost = getMaxRegionCost(inputSolver)
+  const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
+    MAX_HOT_REGIONS: 0,
+  })
+
+  solver.solve()
+
+  expect(initialMaxRegionCost).toBeGreaterThan(0)
+  expect(solver.stats.acceptedMutationCount).toBe(1)
+  expect(getMaxRegionCost(solver)).toBeLessThan(initialMaxRegionCost)
+  expect(solver.stats.finalTotalSegmentLength).toBeGreaterThan(
+    solver.stats.initialTotalSegmentLength,
+  )
+  expect(solver.stats.finalTotalRoutingRisk).toBeLessThan(
+    solver.stats.initialTotalRoutingRisk,
+  )
+})
+
 test("tracks terminal keepout clearance per obstacle when scoring swaps", () => {
   const inputSolver = createCrossedSolvedSolver()
   inputSolver.topology.portMetadata = Array.from({ length: 6 }, () => ({}))
@@ -486,6 +510,18 @@ test("unravel solver replaces a route through the hottest region", () => {
   expect(getMaxRegionCost(inputSolver)).toBeGreaterThan(0)
   expect(getMaxRegionCost(solver)).toBe(0)
   expect(solver.stats.lastMutationKind).toBe("reroute")
+  expect(solver.stats.finalMaxRoutingRisk).toBeLessThanOrEqual(
+    solver.stats.initialMaxRoutingRisk,
+  )
+  expect(solver.stats.finalTotalRoutingRisk).toBeLessThanOrEqual(
+    solver.stats.initialTotalRoutingRisk,
+  )
+  expect(solver.stats.finalMaxDownstreamRisk).toBeLessThanOrEqual(
+    solver.stats.initialMaxDownstreamRisk,
+  )
+  expect(solver.stats.finalTotalDownstreamRisk).toBeLessThanOrEqual(
+    solver.stats.initialTotalDownstreamRisk,
+  )
   expect(solver.state.regionSegments[3]!.map(([routeId]) => routeId)).toEqual([
     0, 2,
   ])
@@ -499,6 +535,30 @@ test("unravel solver replaces a route through the hottest region", () => {
     solution,
   ).baselineSolver
   expect(getMaxRegionCost(replaySolver)).toBe(getMaxRegionCost(solver))
+})
+
+test("unravel solver optimizes movable routes around fixed solved copper", () => {
+  const inputSolver = createSolvedSolverWithAlternatePath()
+  const fixedSegments = inputSolver.state.regionSegments.map((segments) =>
+    segments.filter(([routeId]) => routeId === 1),
+  )
+  const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
+    FIXED_ROUTE_IDS: [1],
+    REROUTE_CONGESTION_FACTORS: [0],
+  })
+
+  solver.solve()
+
+  expect(solver.solved).toBe(true)
+  expect(solver.failed).toBe(false)
+  expect(solver.stats.fixedRouteCount).toBe(1)
+  expect(getMaxRegionCost(solver)).toBe(0)
+  expect(
+    solver.state.regionSegments.map((segments) =>
+      segments.filter(([routeId]) => routeId === 1),
+    ),
+  ).toEqual(fixedSegments)
+  expect(solver.stats.acceptedRerouteMutationCount).toBeGreaterThan(0)
 })
 
 test("reroute search explores around terminal keepouts instead of accepting an unsafe path", () => {
@@ -538,10 +598,12 @@ test("reroute search explores around terminal keepouts instead of accepting an u
   )
   expect(solver.stats.rejectedRerouteEndpointKeepoutCount).toBe(0)
   expect(solver.stats.terminalKeepoutGeometryCacheHitCount).toBeGreaterThan(0)
-  expect(solver.stats.terminalKeepoutGeometryCacheSize).toBe(
+  expect(solver.stats.terminalKeepoutGeometryCacheSize).toBeGreaterThan(0)
+  expect(solver.stats.terminalKeepoutGeometryCacheSize).toBeLessThan(
     solver.stats.terminalKeepoutBroadPhaseQueryCount,
   )
-  expect(solver.stats.terminalKeepoutExactCheckCount).toBe(
+  expect(solver.stats.terminalKeepoutExactCheckCount).toBeGreaterThan(0)
+  expect(solver.stats.terminalKeepoutExactCheckCount).toBeLessThan(
     solver.stats.terminalKeepoutBroadPhaseCandidateCount,
   )
   expect(
@@ -552,7 +614,7 @@ test("reroute search explores around terminal keepouts instead of accepting an u
   ).toBeGreaterThan(0)
 })
 
-test("unravel solver reuses valid paths before repeating graph-wide A*", () => {
+test("unravel solver stops rerouting once the bottleneck is eliminated", () => {
   const inputSolver = createSolvedSolverWithIndependentAlternatePaths()
   const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
     REROUTE_CONGESTION_FACTORS: [0, 1],
@@ -562,7 +624,7 @@ test("unravel solver reuses valid paths before repeating graph-wide A*", () => {
   solver.solve()
 
   expect(getMaxRegionCost(solver)).toBe(0)
-  expect(solver.stats.acceptedRerouteMutationCount).toBeGreaterThanOrEqual(2)
+  expect(solver.stats.acceptedRerouteMutationCount).toBe(1)
   expect(solver.stats.reusedRerouteCandidateCount).toBeGreaterThan(0)
   expect(solver.stats.optimizationStopReason).toBe("local_optimum")
 })
@@ -590,24 +652,18 @@ test("routing risk groups split routes by downstream connection name", () => {
     REGION_COST_MODEL: "routing-complexity",
     MAX_MUTATIONS: 0,
   })
-  const oneCrossingRisk = computeRoutingRiskRegionCost(
-    10,
-    10,
-    1,
-    0,
-    0,
-    3,
-    0.3,
-    2,
-  )
+  const oneCrossingRisk = computeRoutingRiskRegionCost(10, 10, 1, 0, 0, 3, 0.3)
 
-  expect(solver.initialSummary.totalRoutingRisk).toBeCloseTo(
+  expect(solver.initialSummary.totalDownstreamRisk).toBeCloseTo(
     oneCrossingRisk,
     12,
   )
-  expect(solver.initialSummary.totalRoutingRisk).not.toBeCloseTo(
+  expect(solver.initialSummary.totalDownstreamRisk).not.toBeCloseTo(
     oneCrossingRisk * 2,
     12,
+  )
+  expect(solver.initialSummary.totalRoutingRisk).toBeGreaterThan(
+    solver.initialSummary.totalDownstreamRisk,
   )
 })
 
