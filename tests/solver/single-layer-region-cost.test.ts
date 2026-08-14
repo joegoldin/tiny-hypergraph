@@ -82,6 +82,33 @@ test("same-layer crossings in known single-layer regions are rejected as candida
   expect(multiLayerCrossingCost).toBeLessThan(0.1)
 })
 
+test("routing-risk treats distinct same-net routes as physical crossing owners", () => {
+  const problem = createProblem()
+  problem.routeNet.fill(0)
+  const solver = new TinyHyperGraphSolver(createTopology(1 << 0, 0), problem, {
+    REGION_COST_MODEL: "routing-risk",
+  })
+
+  solver.state.currentRouteId = 0
+  solver.state.currentRouteNetId = 0
+  solver.appendSegmentToRegionCache(0, 0, 2)
+
+  solver.state.currentRouteId = 1
+  solver.state.currentRouteNetId = 0
+  expect(
+    solver.computeG(
+      {
+        nextRegionId: 0,
+        portId: 1,
+        f: 0,
+        g: 0,
+        h: 0,
+      },
+      3,
+    ),
+  ).toBe(Number.POSITIVE_INFINITY)
+})
+
 test("single-bit availableZ masks are all treated as known single-layer regions", () => {
   expect(isKnownSingleLayerMask(1 << 0)).toBe(true)
   expect(isKnownSingleLayerMask(1 << 1)).toBe(true)

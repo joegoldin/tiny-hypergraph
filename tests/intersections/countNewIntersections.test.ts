@@ -114,3 +114,24 @@ test("routing-risk classification matches downstream crossing categories", () =>
     classifyIntersectionLayerMasks(transition, z0, "routing-risk"),
   ).toBeUndefined()
 })
+
+test("routing-risk counts crossing routes on the same electrical net", () => {
+  const existingPairs = createDynamicAnglePairArrays([[7, 0, 0, 2, 0]])
+  const crossingRouteWithDistinctOwner: DynamicAnglePair = [8, 1, 0, 3, 0]
+  const crossingRouteWithSameOwner: DynamicAnglePair = [7, 1, 0, 3, 0]
+
+  expect(
+    countNewIntersections(
+      existingPairs,
+      crossingRouteWithDistinctOwner,
+      "routing-risk",
+    ),
+  ).toEqual([1, 0, 0])
+  expect(
+    countNewIntersections(
+      existingPairs,
+      crossingRouteWithSameOwner,
+      "routing-risk",
+    ),
+  ).toEqual([0, 0, 0])
+})

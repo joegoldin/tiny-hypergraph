@@ -1058,7 +1058,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       newEntryExitLayerChanges,
     ] = countNewIntersectionsWithValues(
       regionCache,
-      state.currentRouteNetId!,
+      this.getCurrentIntersectionOwnerId(),
       segmentGeometry.lesserAngle,
       segmentGeometry.greaterAngle,
       segmentGeometry.layerMask,
@@ -1069,7 +1069,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
     const netIds = new Int32Array(nextLength)
     netIds.set(regionCache.netIds)
-    netIds[nextLength - 1] = state.currentRouteNetId!
+    netIds[nextLength - 1] = this.getCurrentIntersectionOwnerId()
 
     const lesserAngles = new Int32Array(nextLength)
     lesserAngles.set(regionCache.lesserAngles)
@@ -1109,6 +1109,28 @@ export class TinyHyperGraphSolver extends BaseSolver {
         existingSegmentCount,
       ),
     }
+  }
+
+  /**
+   * Legacy congestion treats already-connected routes as one owner. The
+   * downstream routing-risk model scores physical connection chords, so two
+   * distinct routes on the same electrical net must remain distinct owners.
+   */
+  protected getCurrentIntersectionOwnerId(): number {
+    if (this.REGION_COST_MODEL === "routing-risk") {
+      if (this.state.currentRouteId === undefined) {
+        throw new Error(
+          "Routing-risk region costs require the active route id while rebuilding segments",
+        )
+      }
+      return this.state.currentRouteId
+    }
+    if (this.state.currentRouteNetId === undefined) {
+      throw new Error(
+        "Region costs require the active route net id while rebuilding segments",
+      )
+    }
+    return this.state.currentRouteNetId
   }
 
   getSolvedPathSegments(finalCandidate: Candidate): Array<{
@@ -1712,7 +1734,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       newEntryExitLayerChanges,
     ] = countNewIntersectionsWithValues(
       regionCache,
-      state.currentRouteNetId!,
+      this.getCurrentIntersectionOwnerId(),
       lesserAngle,
       greaterAngle,
       layerMask,

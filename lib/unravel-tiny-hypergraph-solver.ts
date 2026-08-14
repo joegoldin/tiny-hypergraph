@@ -8,7 +8,6 @@ import {
 } from "./core"
 import { classifyIntersectionLayerMasks } from "./countNewIntersections"
 import type {
-  NetId,
   PortId,
   RegionId,
   RegionIntersectionCache,
@@ -264,9 +263,11 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     for (const [routeId, fromPortId, toPortId] of this.state.regionSegments[
       regionId
     ]!) {
+      this.state.currentRouteId = routeId
       this.state.currentRouteNetId = this.problem.routeNet[routeId]
       this.appendSegmentToRegionCache(regionId, fromPortId, toPortId)
     }
+    this.state.currentRouteId = undefined
     this.state.currentRouteNetId = undefined
   }
 
@@ -822,7 +823,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     regionId: RegionId,
     removedRouteId: RouteId,
   ): number {
-    const netIds: NetId[] = []
+    const intersectionOwnerIds: number[] = []
     const lesserAngles: number[] = []
     const greaterAngles: number[] = []
     const layerMasks: number[] = []
@@ -837,7 +838,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         fromPortId,
         toPortId,
       )
-      netIds.push(this.problem.routeNet[routeId]!)
+      intersectionOwnerIds.push(this.getIntersectionOwnerId(routeId))
       lesserAngles.push(geometry.lesserAngle)
       greaterAngles.push(geometry.greaterAngle)
       layerMasks.push(geometry.layerMask)
@@ -846,13 +847,20 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
 
     let sameLayerIntersections = 0
     let crossingLayerIntersections = 0
-    for (let leftIndex = 0; leftIndex < netIds.length; leftIndex++) {
+    for (
+      let leftIndex = 0;
+      leftIndex < intersectionOwnerIds.length;
+      leftIndex++
+    ) {
       for (
         let rightIndex = leftIndex + 1;
-        rightIndex < netIds.length;
+        rightIndex < intersectionOwnerIds.length;
         rightIndex++
       ) {
-        if (netIds[leftIndex] === netIds[rightIndex]) continue
+        if (
+          intersectionOwnerIds[leftIndex] === intersectionOwnerIds[rightIndex]
+        )
+          continue
         const intersects =
           (lesserAngles[rightIndex]! < lesserAngles[leftIndex]! &&
             lesserAngles[leftIndex]! < greaterAngles[rightIndex]!) !==
@@ -878,7 +886,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       sameLayerIntersections,
       crossingLayerIntersections,
       entryExitLayerChanges,
-      netIds.length,
+      intersectionOwnerIds.length,
     )
   }
 
@@ -931,7 +939,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     left: BoundaryPortSlot,
     right: BoundaryPortSlot,
   ) {
-    const netIds: NetId[] = []
+    const intersectionOwnerIds: number[] = []
     const lesserAngles: number[] = []
     const greaterAngles: number[] = []
     const layerMasks: number[] = []
@@ -954,7 +962,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         fromPortId,
         toPortId,
       )
-      netIds.push(this.problem.routeNet[routeId]!)
+      intersectionOwnerIds.push(this.getIntersectionOwnerId(routeId))
       lesserAngles.push(geometry.lesserAngle)
       greaterAngles.push(geometry.greaterAngle)
       layerMasks.push(geometry.layerMask)
@@ -963,13 +971,20 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
 
     let sameLayerIntersections = 0
     let crossingLayerIntersections = 0
-    for (let leftIndex = 0; leftIndex < netIds.length; leftIndex++) {
+    for (
+      let leftIndex = 0;
+      leftIndex < intersectionOwnerIds.length;
+      leftIndex++
+    ) {
       for (
         let rightIndex = leftIndex + 1;
-        rightIndex < netIds.length;
+        rightIndex < intersectionOwnerIds.length;
         rightIndex++
       ) {
-        if (netIds[leftIndex] === netIds[rightIndex]) continue
+        if (
+          intersectionOwnerIds[leftIndex] === intersectionOwnerIds[rightIndex]
+        )
+          continue
         const intersects =
           (lesserAngles[rightIndex]! < lesserAngles[leftIndex]! &&
             lesserAngles[leftIndex]! < greaterAngles[rightIndex]!) !==
@@ -995,7 +1010,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       sameLayerIntersections,
       crossingLayerIntersections,
       entryExitLayerChanges,
-      netIds.length,
+      intersectionOwnerIds.length,
     )
   }
 
@@ -1052,15 +1067,23 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     this.state.goalPortId = -1
   }
 
+  private getIntersectionOwnerId(routeId: RouteId): number {
+    return this.REGION_COST_MODEL === "routing-risk"
+      ? routeId
+      : this.problem.routeNet[routeId]!
+  }
+
   private rebuildRegionCache(regionId: RegionId) {
     this.state.regionIntersectionCaches[regionId] =
       createEmptyRegionIntersectionCache()
     for (const [routeId, fromPortId, toPortId] of this.state.regionSegments[
       regionId
     ]!) {
+      this.state.currentRouteId = routeId
       this.state.currentRouteNetId = this.problem.routeNet[routeId]
       this.appendSegmentToRegionCache(regionId, fromPortId, toPortId)
     }
+    this.state.currentRouteId = undefined
     this.state.currentRouteNetId = undefined
   }
 
