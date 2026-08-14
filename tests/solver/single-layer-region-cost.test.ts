@@ -182,4 +182,26 @@ test("routing-risk region cost follows the downstream tuned-capacity model", () 
 
   expect(cost).toBeCloseTo(usedCapacity / totalCapacity)
   expect(computeRoutingRiskRegionCost(4, 2, 1, 0, 0, 1 << 2)).toBe(1)
+
+  const sparseCrossingRisk = computeRoutingRiskRegionCost(
+    0.5,
+    1.9,
+    1,
+    0,
+    0,
+    3,
+    0.3,
+    4,
+  )
+  const denseCrossingRisk = computeRoutingRiskRegionCost(
+    0.5,
+    1.9,
+    1,
+    0,
+    0,
+    3,
+    0.3,
+    5,
+  )
+  expect(denseCrossingRisk).toBeGreaterThan(sparseCrossingRisk)
 })

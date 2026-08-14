@@ -278,6 +278,21 @@ const createSolvedSolverWithIndependentAlternatePaths = () => {
   return solver
 }
 
+const createSolvedSolverRequiringPairedReroutes = () => {
+  const solver = createSolvedSolverWithIndependentAlternatePaths()
+  const copyPortCount = solver.topology.portCount / 2
+  const localPortX = [0, 1, 2, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1]
+  const localPortY = [0, 0, 0, 10, 10, 10, 0, -10, -10, -10, -10, 20, 20]
+  for (let copyIndex = 0; copyIndex < 2; copyIndex++) {
+    for (let localPortId = 0; localPortId < copyPortCount; localPortId++) {
+      const portId = localPortId + copyIndex * copyPortCount
+      solver.topology.portX[portId] = localPortX[localPortId]! + copyIndex * 100
+      solver.topology.portY[portId] = localPortY[localPortId]!
+    }
+  }
+  return solver
+}
+
 const createSolvedSolverWithSharedDownstreamConnection = () => {
   const topology: TinyHyperGraphTopology = {
     portCount: 6,
@@ -466,13 +481,39 @@ test("unravel solver reuses valid paths before repeating graph-wide A*", () => {
   expect(solver.stats.optimizationStopReason).toBe("local_optimum")
 })
 
+test("unravel solver escapes a one-route local optimum with paired reroutes", () => {
+  const inputSolver = createSolvedSolverRequiringPairedReroutes()
+  const initialMaxRegionCost = getMaxRegionCost(inputSolver)
+  const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
+    MAX_MUTATIONS: 1,
+    REROUTE_CONGESTION_FACTORS: [0],
+  })
+
+  solver.solve()
+
+  expect(initialMaxRegionCost).toBeGreaterThan(0)
+  expect(getMaxRegionCost(solver)).toBe(0)
+  expect(solver.stats.acceptedRerouteMutationCount).toBe(1)
+  expect(solver.stats.acceptedPairRerouteMutationCount).toBe(1)
+  expect(solver.stats.lastMutationRouteIds).toHaveLength(2)
+})
+
 test("routing risk groups split routes by downstream connection name", () => {
   const inputSolver = createSolvedSolverWithSharedDownstreamConnection()
   const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
     REGION_COST_MODEL: "routing-complexity",
     MAX_MUTATIONS: 0,
   })
-  const oneCrossingRisk = computeRoutingRiskRegionCost(10, 10, 1, 0, 0, 3)
+  const oneCrossingRisk = computeRoutingRiskRegionCost(
+    10,
+    10,
+    1,
+    0,
+    0,
+    3,
+    0.3,
+    2,
+  )
 
   expect(solver.initialSummary.totalRoutingRisk).toBeCloseTo(
     oneCrossingRisk,

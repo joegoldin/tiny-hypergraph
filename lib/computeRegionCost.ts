@@ -1,11 +1,105 @@
 export const DEFAULT_MIN_VIA_PAD_DIAMETER = 0.3
 export const TRACE_VIA_MARGIN = 0.15
 const traceWidth = 0.1
+const routedTraceWidth = 0.15
 const IMPOSSIBLE_SINGLE_LAYER_INTERSECTION_COST = 10
 
 export const isKnownSingleLayerMask = (regionAvailableZMask: number) =>
   regionAvailableZMask > 0 &&
   (regionAvailableZMask & (regionAvailableZMask - 1)) === 0
+
+export interface PreparedRoutingRiskRegionCapacity {
+  isKnownSingleLayer: boolean
+  totalCapacity: number
+  traceOccupancyPerTrace: number
+}
+
+export const prepareRoutingRiskRegionCapacity = (
+  regionWidth: number,
+  regionHeight: number,
+  regionAvailableZMask = 0,
+  minViaPadDiameter = DEFAULT_MIN_VIA_PAD_DIAMETER,
+): PreparedRoutingRiskRegionCapacity => {
+  const isKnownSingleLayer = isKnownSingleLayerMask(regionAvailableZMask)
+  const width = Number(regionWidth)
+  const height = Number(regionHeight)
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return {
+      isKnownSingleLayer,
+      totalCapacity: 0,
+      traceOccupancyPerTrace: Number.POSITIVE_INFINITY,
+    }
+  }
+
+  const obstacleMargin = 0.2
+  const minimumSide = Math.min(width, height)
+  const effectiveSpan = Math.sqrt(width * height)
+  const narrowSideViaRatio = minimumSide / (minViaPadDiameter + obstacleMargin)
+  const viaRatioFactor = Math.min(
+    1.2,
+    Math.max(0.85, narrowSideViaRatio ** 0.05),
+  )
+  const viaLengthAcross =
+    (effectiveSpan * viaRatioFactor) / (minViaPadDiameter / 2 + obstacleMargin)
+  let totalCapacity = (viaLengthAcross / 2) ** 1.1
+  if (isKnownSingleLayer && totalCapacity > 1) totalCapacity = 1
+  if (!Number.isFinite(totalCapacity) || totalCapacity <= 0) totalCapacity = 0
+
+  return {
+    isKnownSingleLayer,
+    totalCapacity,
+    traceOccupancyPerTrace:
+      routedTraceWidth /
+      (effectiveSpan * countAvailableLayers(regionAvailableZMask)),
+  }
+}
+
+export const computeRoutingRiskRegionCostWithPreparedCapacity = (
+  capacity: PreparedRoutingRiskRegionCapacity,
+  numSameLayerIntersections: number,
+  numTransitionPairIntersections: number,
+  numEntryExitChanges: number,
+  traceCount = 0,
+): number => {
+  if (
+    capacity.isKnownSingleLayer &&
+    (numSameLayerIntersections > 0 ||
+      numTransitionPairIntersections > 0 ||
+      numEntryExitChanges > 0)
+  ) {
+    return 1
+  }
+
+  const estimatedViaCount =
+    numSameLayerIntersections * 0.82 +
+    numEntryExitChanges * 0.41 +
+    numTransitionPairIntersections * 0.2
+  const estimatedUsedCapacity = (estimatedViaCount / 2) ** 1.1
+  if (!Number.isFinite(estimatedUsedCapacity)) {
+    return estimatedViaCount > 0 ? 1 : 0
+  }
+  if (capacity.totalCapacity <= 0) {
+    return estimatedUsedCapacity > 0 ? 1 : 0
+  }
+
+  const remainingCapacityFraction =
+    1 - Math.max(0, traceCount) * capacity.traceOccupancyPerTrace
+  if (
+    !Number.isFinite(remainingCapacityFraction) ||
+    remainingCapacityFraction <= 0
+  ) {
+    return estimatedUsedCapacity > 0 ? 1 : 0
+  }
+
+  return (
+    estimatedUsedCapacity / capacity.totalCapacity / remainingCapacityFraction
+  )
+}
 
 export const computeRegionCost = (
   regionWidth: number,
@@ -46,54 +140,20 @@ export const computeRoutingRiskRegionCost = (
   numEntryExitChanges: number,
   regionAvailableZMask = 0,
   minViaPadDiameter = DEFAULT_MIN_VIA_PAD_DIAMETER,
+  traceCount = 0,
 ): number => {
-  if (
-    isKnownSingleLayerMask(regionAvailableZMask) &&
-    (numSameLayerIntersections > 0 ||
-      numTransitionPairIntersections > 0 ||
-      numEntryExitChanges > 0)
-  ) {
-    return 1
-  }
-
-  const estimatedViaCount =
-    numSameLayerIntersections * 0.82 +
-    numEntryExitChanges * 0.41 +
-    numTransitionPairIntersections * 0.2
-  const estimatedUsedCapacity = (estimatedViaCount / 2) ** 1.1
-  if (!Number.isFinite(estimatedUsedCapacity)) {
-    return estimatedViaCount > 0 ? 1 : 0
-  }
-
-  const width = Number(regionWidth)
-  const height = Number(regionHeight)
-  if (
-    !Number.isFinite(width) ||
-    !Number.isFinite(height) ||
-    width <= 0 ||
-    height <= 0
-  ) {
-    return estimatedUsedCapacity > 0 ? 1 : 0
-  }
-
-  const obstacleMargin = 0.2
-  const minimumSide = Math.min(width, height)
-  const effectiveSpan = Math.sqrt(width * height)
-  const narrowSideViaRatio = minimumSide / (minViaPadDiameter + obstacleMargin)
-  const viaRatioFactor = Math.min(
-    1.2,
-    Math.max(0.85, narrowSideViaRatio ** 0.05),
+  return computeRoutingRiskRegionCostWithPreparedCapacity(
+    prepareRoutingRiskRegionCapacity(
+      regionWidth,
+      regionHeight,
+      regionAvailableZMask,
+      minViaPadDiameter,
+    ),
+    numSameLayerIntersections,
+    numTransitionPairIntersections,
+    numEntryExitChanges,
+    traceCount,
   )
-  const viaLengthAcross =
-    (effectiveSpan * viaRatioFactor) / (minViaPadDiameter / 2 + obstacleMargin)
-  let totalCapacity = (viaLengthAcross / 2) ** 1.1
-  if (isKnownSingleLayerMask(regionAvailableZMask) && totalCapacity > 1) {
-    totalCapacity = 1
-  }
-  if (!Number.isFinite(totalCapacity) || totalCapacity <= 0) {
-    return estimatedUsedCapacity > 0 ? 1 : 0
-  }
-  return estimatedUsedCapacity / totalCapacity
 }
 
 export const computeRegionCostForArea = (

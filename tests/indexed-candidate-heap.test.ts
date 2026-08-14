@@ -71,3 +71,16 @@ test("uses compact generation-scoped hop state when topology slots are provided"
   heap.queue(first)
   expect(heap.dequeue()).toBe(first)
 })
+
+test("can decrease-key queued hops while allowing dequeued hops to reopen", () => {
+  const heap = new IndexedCandidateHeap(10, undefined, false)
+  const first = candidate({ portId: 1, nextRegionId: 2, g: 5, f: 5 })
+  const reopened = candidate({ portId: 1, nextRegionId: 2, g: 2, f: 2 })
+
+  heap.queue(first)
+  expect(heap.dequeue()).toBe(first)
+  expect(heap.isClosedHop(1, 2)).toBe(false)
+
+  heap.queue(reopened)
+  expect(heap.dequeue()).toBe(reopened)
+})

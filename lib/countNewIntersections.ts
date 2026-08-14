@@ -83,6 +83,8 @@ export const countNewIntersectionsWithValues = (
 
   let sameLayerIntersectionCount = 0
   let crossingLayerIntersectionCount = 0
+  const newChangesLayer =
+    newLayerMask > 0 && (newLayerMask & (newLayerMask - 1)) !== 0
 
   for (let i = 0; i < netIds.length; i++) {
     if (newNet === netIds[i]) continue
@@ -106,15 +108,38 @@ export const countNewIntersectionsWithValues = (
 
     if (lesserAngleIsInsideInterval === greaterAngleIsInsideInterval) continue
 
-    const intersectionKind = classifyIntersectionLayerMasks(
-      newLayerMask,
-      layerMasks[i]!,
-      regionCostModel,
-    )
-    if (intersectionKind === "same-layer") {
+    const existingLayerMask = layerMasks[i]!
+    if (regionCostModel === "legacy") {
+      if ((newLayerMask & existingLayerMask) !== 0) {
+        sameLayerIntersectionCount++
+      } else {
+        crossingLayerIntersectionCount++
+      }
+      continue
+    }
+
+    const existingChangesLayer =
+      existingLayerMask > 0 &&
+      (existingLayerMask & (existingLayerMask - 1)) !== 0
+    if (regionCostModel === "routing-complexity") {
+      if (newChangesLayer && existingChangesLayer) {
+        crossingLayerIntersectionCount++
+      } else if (
+        newChangesLayer ||
+        existingChangesLayer ||
+        (newLayerMask & existingLayerMask) !== 0
+      ) {
+        sameLayerIntersectionCount++
+      }
+      continue
+    }
+
+    if (newChangesLayer || existingChangesLayer) {
+      if (newChangesLayer && existingChangesLayer) {
+        crossingLayerIntersectionCount++
+      }
+    } else if ((newLayerMask & existingLayerMask) !== 0) {
       sameLayerIntersectionCount++
-    } else if (intersectionKind === "transition-pair") {
-      crossingLayerIntersectionCount++
     }
   }
 

@@ -3,9 +3,11 @@ import type { GraphicsObject } from "graphics-debug"
 import { convertToSerializedHyperGraph } from "./compat/convertToSerializedHyperGraph"
 import {
   computeRegionCost,
-  computeRoutingRiskRegionCost,
+  computeRoutingRiskRegionCostWithPreparedCapacity,
   DEFAULT_MIN_VIA_PAD_DIAMETER,
   isKnownSingleLayerMask,
+  prepareRoutingRiskRegionCapacity,
+  type PreparedRoutingRiskRegionCapacity,
 } from "./computeRegionCost"
 import {
   countNewIntersectionsWithValues,
@@ -500,6 +502,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
   /** Flat common-case lookup avoids walking nested topology arrays per hop. */
   protected readonly candidateFirstRegionByPortId: Int32Array
   protected readonly candidateSecondRegionByPortId: Int32Array
+  protected readonly routingRiskCapacityByRegion: PreparedRoutingRiskRegionCapacity[]
   /** Rare fallback for callers that construct a non-incident directed hop. */
   private candidateOverflowBestCost?: Map<HopId, number>
   private _problemSetup?: TinyHyperGraphProblemSetup
@@ -557,6 +560,16 @@ export class TinyHyperGraphSolver extends BaseSolver {
   ) {
     super()
     applyTinyHyperGraphSolverOptions(this, options)
+    this.routingRiskCapacityByRegion = Array.from(
+      { length: topology.regionCount },
+      (_, regionId) =>
+        prepareRoutingRiskRegionCapacity(
+          topology.regionWidth[regionId]!,
+          topology.regionHeight[regionId]!,
+          topology.regionAvailableZMask?.[regionId] ?? 0,
+          this.minViaPadDiameter,
+        ),
+    )
     let candidateHopSlotStride = 1
     const candidateFirstRegionByPortId = new Int32Array(
       topology.portCount,
@@ -988,14 +1001,11 @@ export class TinyHyperGraphSolver extends BaseSolver {
       ) {
         return 0
       }
-      return computeRoutingRiskRegionCost(
-        this.topology.regionWidth[regionId],
-        this.topology.regionHeight[regionId],
+      return computeRoutingRiskRegionCostWithPreparedCapacity(
+        this.routingRiskCapacityByRegion[regionId]!,
         numSameLayerIntersections,
         numCrossLayerIntersections,
         numEntryExitChanges,
-        this.topology.regionAvailableZMask?.[regionId] ?? 0,
-        this.minViaPadDiameter,
       )
     }
     return computeRegionCost(
@@ -1709,16 +1719,40 @@ export class TinyHyperGraphSolver extends BaseSolver {
     if (lowerBoundCost > maximumCost + 1e-9) {
       return Number.POSITIVE_INFINITY
     }
-    const currentPortId = currentCandidate.portId
+    const newRegionCost = this.computeRegionCostAfterAddingSegment(
+      nextRegionId,
+      currentCandidate.portId,
+      neighborPortId,
+    )
+    if (!Number.isFinite(newRegionCost)) {
+      return Number.POSITIVE_INFINITY
+    }
+
+    return (
+      currentCandidate.g +
+      (newRegionCost - regionCache.existingRegionCost) +
+      state.regionCongestionCost[nextRegionId] +
+      (this.problem.portPenalty?.[neighborPortId] ?? 0) +
+      segmentDistanceCost
+    )
+  }
+
+  protected computeRegionCostAfterAddingSegment(
+    regionId: RegionId,
+    currentPortId: PortId,
+    neighborPortId: PortId,
+  ): number {
+    const { state, topology } = this
+    const regionCache = state.regionIntersectionCaches[regionId]
     const currentPortAngle =
-      this.candidateFirstRegionByPortId[currentPortId] === nextRegionId ||
-      this.candidateSecondRegionByPortId[currentPortId] !== nextRegionId
+      this.candidateFirstRegionByPortId[currentPortId] === regionId ||
+      this.candidateSecondRegionByPortId[currentPortId] !== regionId
         ? topology.portAngleForRegion1[currentPortId]
         : (topology.portAngleForRegion2?.[currentPortId] ??
           topology.portAngleForRegion1[currentPortId])
     const neighborPortAngle =
-      this.candidateFirstRegionByPortId[neighborPortId] === nextRegionId ||
-      this.candidateSecondRegionByPortId[neighborPortId] !== nextRegionId
+      this.candidateFirstRegionByPortId[neighborPortId] === regionId ||
+      this.candidateSecondRegionByPortId[neighborPortId] !== regionId
         ? topology.portAngleForRegion1[neighborPortId]
         : (topology.portAngleForRegion2?.[neighborPortId] ??
           topology.portAngleForRegion1[neighborPortId])
@@ -1751,27 +1785,18 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
     if (
       newSameLayerIntersections > 0 &&
-      this.isKnownSingleLayerRegion(nextRegionId)
+      this.isKnownSingleLayerRegion(regionId)
     ) {
       return Number.POSITIVE_INFINITY
     }
 
-    const newRegionCost =
-      this.computeRegionCostForRegion(
-        nextRegionId,
-        regionCache.existingSameLayerIntersections + newSameLayerIntersections,
-        regionCache.existingCrossingLayerIntersections +
-          newCrossLayerIntersections,
-        regionCache.existingEntryExitLayerChanges + newEntryExitLayerChanges,
-        regionCache.existingSegmentCount + 1,
-      ) - regionCache.existingRegionCost
-
-    return (
-      currentCandidate.g +
-      newRegionCost +
-      state.regionCongestionCost[nextRegionId] +
-      (this.problem.portPenalty?.[neighborPortId] ?? 0) +
-      segmentDistanceCost
+    return this.computeRegionCostForRegion(
+      regionId,
+      regionCache.existingSameLayerIntersections + newSameLayerIntersections,
+      regionCache.existingCrossingLayerIntersections +
+        newCrossLayerIntersections,
+      regionCache.existingEntryExitLayerChanges + newEntryExitLayerChanges,
+      regionCache.existingSegmentCount + 1,
     )
   }
 

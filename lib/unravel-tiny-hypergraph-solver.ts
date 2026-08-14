@@ -6,8 +6,9 @@ import {
   TinyHyperGraphSolver,
   type TinyHyperGraphSolverOptions,
 } from "./core"
-import { computeRoutingRiskRegionCost } from "./computeRegionCost"
+import { computeRoutingRiskRegionCostWithPreparedCapacity } from "./computeRegionCost"
 import { classifyIntersectionLayerMasks } from "./countNewIntersections"
+import { IndexedCandidateHeap } from "./indexed-candidate-heap"
 import type {
   PortId,
   RegionId,
@@ -32,28 +33,59 @@ interface PortOccurrence {
 interface UnravelRegionCostSummary extends RegionCostSummary {
   maxRegionSegmentCount: number
   squaredRegionSegmentCount: number
+  /** Total planar length of all region-local route chords. */
+  totalSegmentLength: number
   /** Downstream high-density crossing-risk metrics for composite cost plateaus. */
   maxRoutingRisk: number
   squaredRoutingRisk: number
   totalRoutingRisk: number
+  /** Worst risk when every routed segment is retained as a physical chord. */
+  maxSegmentRoutingRisk: number
 }
 
-interface SwapMutation {
-  kind: "swap"
-  port1Id: PortId
-  port2Id: PortId
-  route1Id?: RouteId
-  route2Id?: RouteId
+interface BoundaryPermutation {
+  slots: BoundaryPortSlot[]
+  destinationPortIds: PortId[]
+}
+
+interface BoundaryMutation {
+  kind: "swap" | "cycle"
+  permutation: BoundaryPermutation
   region1Id: RegionId
   region2Id: RegionId
   region1Cost: number
   region2Cost: number
+  region1RoutingRisk: number
+  region2RoutingRisk: number
+  region1SegmentRoutingRisk: number
+  region2SegmentRoutingRisk: number
+  region1SegmentLength: number
+  region2SegmentLength: number
   summary: UnravelRegionCostSummary
 }
+
+interface BoundaryScoringContext {
+  squaredRoutingRiskByRegion: Float64Array
+  getUnaffectedMaxRegionCost: (
+    region1Id: RegionId,
+    region2Id: RegionId,
+  ) => number
+  getUnaffectedMaxRoutingRisk: (
+    region1Id: RegionId,
+    region2Id: RegionId,
+  ) => number
+  getUnaffectedMaxSegmentRoutingRisk: (
+    region1Id: RegionId,
+    region2Id: RegionId,
+  ) => number
+}
+
+type BoundaryMutationScore = Omit<BoundaryMutation, "kind" | "permutation">
 
 interface RerouteMutation {
   kind: "reroute"
   routeId: RouteId
+  routeIds: RouteId[]
   congestionFactor: number
   replacementPath: ReplacementPathSegment[]
   replacementState: {
@@ -61,7 +93,22 @@ interface RerouteMutation {
     regionSegments: Array<[RouteId, PortId, PortId][]>
     regionIntersectionCaches: RegionIntersectionCache[]
   }
+  replacementRouteMetrics: Array<{
+    routeId: RouteId
+    layerChangeCount: number
+    segmentLength: number
+  }>
+  routingRiskByRegion: Float64Array
+  segmentRoutingRiskByRegion: Float64Array
+  segmentLengthByRegion: Float64Array
   summary: UnravelRegionCostSummary
+}
+
+interface ScoredSolverState {
+  summary: UnravelRegionCostSummary
+  routingRiskByRegion: Float64Array
+  segmentRoutingRiskByRegion: Float64Array
+  segmentLengthByRegion: Float64Array
 }
 
 interface ReplacementPathSegment {
@@ -84,7 +131,7 @@ export interface UnravelTinyHyperGraphSolverOptions
   MAX_REROUTE_MUTATIONS?: number
   /** Number of the most expensive regions whose routes are considered. */
   MAX_HOT_REGIONS?: number
-  /** Iteration cap for each single-route replacement search. */
+  /** Optional iteration cap for each route-replacement search. */
   REROUTE_MAX_ITERATIONS?: number
   /** Maximum routes from the hot regions evaluated per mutation. */
   MAX_REROUTE_ROUTES?: number
@@ -142,6 +189,19 @@ const compareRegionCostSummaries = (
     return left.totalRoutingRisk - right.totalRoutingRisk
   }
 
+  if (
+    Math.abs(left.maxSegmentRoutingRisk - right.maxSegmentRoutingRisk) >
+    COST_EPSILON
+  ) {
+    return left.maxSegmentRoutingRisk - right.maxSegmentRoutingRisk
+  }
+
+  if (
+    Math.abs(left.totalSegmentLength - right.totalSegmentLength) > COST_EPSILON
+  ) {
+    return left.totalSegmentLength - right.totalSegmentLength
+  }
+
   return 0
 }
 
@@ -149,6 +209,8 @@ const isParetoImprovement = (
   candidate: UnravelRegionCostSummary,
   current: UnravelRegionCostSummary,
 ) => {
+  if (!isRoutingRiskNoWorse(candidate, current)) return false
+
   if (candidate.maxRegionCost < current.maxRegionCost - COST_EPSILON) {
     return true
   }
@@ -160,9 +222,7 @@ const isParetoImprovement = (
     candidate.totalRegionCost <= current.totalRegionCost + COST_EPSILON &&
     candidate.maxRegionSegmentCount <= current.maxRegionSegmentCount &&
     candidate.squaredRegionSegmentCount <= current.squaredRegionSegmentCount &&
-    candidate.maxRoutingRisk <= current.maxRoutingRisk + COST_EPSILON &&
-    candidate.squaredRoutingRisk <= current.squaredRoutingRisk + COST_EPSILON &&
-    candidate.totalRoutingRisk <= current.totalRoutingRisk + COST_EPSILON
+    candidate.totalSegmentLength <= current.totalSegmentLength + COST_EPSILON
   if (!noWorse) return false
 
   return (
@@ -173,6 +233,46 @@ const isParetoImprovement = (
     candidate.squaredRoutingRisk < current.squaredRoutingRisk - COST_EPSILON ||
     candidate.totalRoutingRisk < current.totalRoutingRisk - COST_EPSILON
   )
+}
+
+const isRoutingRiskNoWorse = (
+  candidate: UnravelRegionCostSummary,
+  current: UnravelRegionCostSummary,
+) =>
+  candidate.maxRoutingRisk <= current.maxRoutingRisk + COST_EPSILON &&
+  candidate.squaredRoutingRisk <= current.squaredRoutingRisk + COST_EPSILON &&
+  candidate.totalRoutingRisk <= current.totalRoutingRisk + COST_EPSILON &&
+  candidate.maxSegmentRoutingRisk <=
+    current.maxSegmentRoutingRisk + COST_EPSILON
+
+/**
+ * Boundary swaps preserve the set of routes in each region and each route's
+ * transition count. Their physical safety is therefore governed by the worst
+ * local routing risk and planar span; aggregate risk is allowed to move among
+ * regions so a sequence of untwists can escape a false Pareto minimum.
+ */
+const isSwapParetoImprovement = (
+  candidate: UnravelRegionCostSummary,
+  current: UnravelRegionCostSummary,
+) => {
+  if (
+    candidate.maxRoutingRisk > current.maxRoutingRisk + COST_EPSILON ||
+    candidate.maxSegmentRoutingRisk >
+      current.maxSegmentRoutingRisk + COST_EPSILON
+  ) {
+    return false
+  }
+  if (candidate.maxRegionCost < current.maxRegionCost - COST_EPSILON) {
+    return true
+  }
+  if (candidate.maxRegionCost > current.maxRegionCost + COST_EPSILON) {
+    return false
+  }
+  if (candidate.totalRegionCost > current.totalRegionCost + COST_EPSILON) {
+    return false
+  }
+
+  return candidate.totalRegionCost < current.totalRegionCost - COST_EPSILON
 }
 
 const createWholeGraphProblem = (
@@ -200,7 +300,18 @@ const getUnravelCoreOptions = (
 
 class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
   replacementRouteSegmentCount = 0
+  readonly replacementRouteSegmentCountByRouteId: Int32Array
+  readonly replacementRouteLayerChangeCountByRouteId: Int32Array
+  readonly replacementRouteSegmentLengthByRouteId: Float64Array
+  readonly blockingRouteIds = new Set<RouteId>()
   private readonly writableRegionMask: Int8Array
+  private readonly writableRegionIds: RegionId[] = []
+  private readonly replacementPathByRouteId = new Map<
+    RouteId,
+    ReplacementPathSegment[]
+  >()
+  private indexedInputRegionSegments?: Array<[RouteId, PortId, PortId][]>
+  private readonly inputRegionIdsByRouteId: RegionId[][]
 
   constructor(inputSolver: TinyHyperGraphSolver, maxIterations: number) {
     super(
@@ -225,6 +336,54 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     )
 
     this.writableRegionMask = new Int8Array(this.topology.regionCount)
+    this.replacementRouteSegmentCountByRouteId = new Int32Array(
+      this.problem.routeCount,
+    )
+    this.replacementRouteLayerChangeCountByRouteId = new Int32Array(
+      this.problem.routeCount,
+    )
+    this.replacementRouteSegmentLengthByRouteId = new Float64Array(
+      this.problem.routeCount,
+    )
+    this.inputRegionIdsByRouteId = Array.from(
+      { length: this.problem.routeCount },
+      () => [],
+    )
+    // The geometric heuristic is goal-directed but not consistent with the
+    // marginal region-cost objective, so a dequeued hop must remain reopenable.
+    // Decrease-key still removes dominated queued copies, avoiding stale heap
+    // expansion without changing the search's path-order semantics.
+    this.state.candidateQueue = new IndexedCandidateHeap(
+      this.topology.regionCount,
+      {
+        hopCapacity: this.candidateHopCapacity,
+        hopSlotStride: this.candidateHopSlotStride,
+        firstRegionByPortId: this.candidateFirstRegionByPortId,
+        secondRegionByPortId: this.candidateSecondRegionByPortId,
+        incidentPortRegion: this.topology.incidentPortRegion,
+      },
+      false,
+    )
+  }
+
+  private indexInputRouteRegions(inputSolver: TinyHyperGraphSolver) {
+    if (this.indexedInputRegionSegments === inputSolver.state.regionSegments) {
+      return
+    }
+    for (const regionIds of this.inputRegionIdsByRouteId) regionIds.length = 0
+    for (
+      let regionId = 0;
+      regionId < inputSolver.state.regionSegments.length;
+      regionId++
+    ) {
+      for (const [routeId] of inputSolver.state.regionSegments[regionId]!) {
+        const regionIds = this.inputRegionIdsByRouteId[routeId]!
+        if (regionIds[regionIds.length - 1] !== regionId) {
+          regionIds.push(regionId)
+        }
+      }
+    }
+    this.indexedInputRegionSegments = inputSolver.state.regionSegments
   }
 
   resetForRoute(
@@ -232,6 +391,16 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     routeIdToReplace: RouteId,
     congestionFactor: number,
   ) {
+    this.resetForRoutes(inputSolver, [routeIdToReplace], congestionFactor)
+  }
+
+  resetForRoutes(
+    inputSolver: TinyHyperGraphSolver,
+    routeIdsToReplace: RouteId[],
+    congestionFactor: number,
+  ) {
+    const routeIdSet = new Set(routeIdsToReplace)
+    this.indexInputRouteRegions(inputSolver)
     this.TRACE_DENSITY_COST_FACTOR = 0
     this.solved = false
     this.failed = false
@@ -248,27 +417,34 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     this.routeAttemptCountByRouteId.fill(0)
     this.routeSuccessCountByRouteId.fill(0)
     this.replacementRouteSegmentCount = 0
+    this.replacementRouteSegmentCountByRouteId.fill(0)
+    this.replacementRouteLayerChangeCountByRouteId.fill(0)
+    this.replacementRouteSegmentLengthByRouteId.fill(0)
+    this.replacementPathByRouteId.clear()
     this.writableRegionMask.fill(0)
+    this.writableRegionIds.length = 0
+    this.blockingRouteIds.clear()
 
     this.state.portAssignment.set(inputSolver.state.portAssignment)
     this.state.regionSegments = inputSolver.state.regionSegments.slice()
     this.state.regionIntersectionCaches =
       inputSolver.state.regionIntersectionCaches.slice()
     const removedPortIds = new Set<PortId>()
+    const affectedRegionIds = [
+      ...new Set(
+        routeIdsToReplace.flatMap(
+          (routeId) => this.inputRegionIdsByRouteId[routeId]!,
+        ),
+      ),
+    ].sort((left, right) => left - right)
 
-    for (
-      let regionId = 0;
-      regionId < inputSolver.state.regionSegments.length;
-      regionId++
-    ) {
+    for (const regionId of affectedRegionIds) {
       const inputSegments = inputSolver.state.regionSegments[regionId]!
-      if (!inputSegments.some(([routeId]) => routeId === routeIdToReplace)) {
-        continue
-      }
       this.writableRegionMask[regionId] = 1
+      this.writableRegionIds.push(regionId)
       this.state.regionSegments[regionId] = inputSegments.filter(
         ([routeId, fromPortId, toPortId]) => {
-          if (routeId !== routeIdToReplace) return true
+          if (!routeIdSet.has(routeId)) return true
           removedPortIds.add(fromPortId)
           removedPortIds.add(toPortId)
           return false
@@ -294,14 +470,18 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
 
     this.state.currentRouteId = undefined
     this.state.currentRouteNetId = undefined
-    this.state.unroutedRoutes = [routeIdToReplace]
+    this.state.unroutedRoutes = [...routeIdsToReplace]
     this.state.candidateQueue.clear()
     this.resetCandidateBestCosts()
     this.state.goalPortId = -1
-    for (let regionId = 0; regionId < this.topology.regionCount; regionId++) {
-      this.state.regionCongestionCost[regionId] =
-        inputSolver.state.regionIntersectionCaches[regionId]!
-          .existingRegionCost * congestionFactor
+    if (congestionFactor === 0) {
+      this.state.regionCongestionCost.fill(0)
+    } else {
+      for (let regionId = 0; regionId < this.topology.regionCount; regionId++) {
+        this.state.regionCongestionCost[regionId] =
+          inputSolver.state.regionIntersectionCaches[regionId]!
+            .existingRegionCost * congestionFactor
+      }
     }
   }
 
@@ -311,11 +491,54 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     this.solved = true
   }
 
+  override isPortReservedForDifferentNet(portId: PortId): boolean {
+    const blocked = super.isPortReservedForDifferentNet(portId)
+    if (!blocked) return false
+    for (const regionId of this.topology.incidentPortRegion[portId] ?? []) {
+      for (const [routeId, fromPortId, toPortId] of this.state.regionSegments[
+        regionId
+      ]!) {
+        if (
+          routeId !== this.state.currentRouteId &&
+          (fromPortId === portId || toPortId === portId)
+        ) {
+          this.blockingRouteIds.add(routeId)
+        }
+      }
+    }
+    return true
+  }
+
   override onPathFound(
     finalCandidate: Parameters<TinyHyperGraphSolver["onPathFound"]>[0],
   ) {
     const solvedSegments = this.getSolvedPathSegments(finalCandidate)
     this.replacementRouteSegmentCount = solvedSegments.length
+    this.replacementRouteSegmentCountByRouteId[this.state.currentRouteId!] =
+      solvedSegments.length
+    let replacementRouteLayerChangeCount = 0
+    let replacementRouteSegmentLength = 0
+    for (const { fromPortId, toPortId } of solvedSegments) {
+      if (this.topology.portZ[fromPortId] !== this.topology.portZ[toPortId]) {
+        replacementRouteLayerChangeCount += 1
+      }
+      replacementRouteSegmentLength += Math.hypot(
+        this.topology.portX[toPortId]! - this.topology.portX[fromPortId]!,
+        this.topology.portY[toPortId]! - this.topology.portY[fromPortId]!,
+      )
+    }
+    this.replacementRouteLayerChangeCountByRouteId[this.state.currentRouteId!] =
+      replacementRouteLayerChangeCount
+    this.replacementRouteSegmentLengthByRouteId[this.state.currentRouteId!] =
+      replacementRouteSegmentLength
+    this.replacementPathByRouteId.set(
+      this.state.currentRouteId!,
+      solvedSegments.map(({ regionId, fromPortId, toPortId }) => ({
+        regionId,
+        fromPortId,
+        toPortId,
+      })),
+    )
     const touchedRegionIds = new Set<RegionId>()
     for (const { regionId } of solvedSegments) {
       touchedRegionIds.add(regionId)
@@ -324,6 +547,7 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
           ...this.state.regionSegments[regionId]!,
         ]
         this.writableRegionMask[regionId] = 1
+        this.writableRegionIds.push(regionId)
       }
     }
     super.onPathFound(finalCandidate)
@@ -349,19 +573,7 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
   }
 
   getReplacementPath(routeId: RouteId): ReplacementPathSegment[] {
-    const path: ReplacementPathSegment[] = []
-    for (
-      let regionId = 0;
-      regionId < this.state.regionSegments.length;
-      regionId++
-    ) {
-      for (const [segmentRouteId, fromPortId, toPortId] of this.state
-        .regionSegments[regionId]!) {
-        if (segmentRouteId !== routeId) continue
-        path.push({ regionId, fromPortId, toPortId })
-      }
-    }
-    return path
+    return [...(this.replacementPathByRouteId.get(routeId) ?? [])]
   }
 
   loadReplacementPath(
@@ -370,38 +582,85 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     congestionFactor: number,
     path: ReplacementPathSegment[],
   ): boolean {
-    this.resetForRoute(inputSolver, routeId, congestionFactor)
-    const routeNetId = this.problem.routeNet[routeId]!
-    this.state.currentRouteId = routeId
-    this.state.currentRouteNetId = routeNetId
-    const touchedRegionIds = new Set<RegionId>()
+    return this.loadReplacementPaths(
+      inputSolver,
+      [{ routeId, path }],
+      congestionFactor,
+    )
+  }
 
-    for (const { regionId, fromPortId, toPortId } of path) {
-      if (this.isRegionReservedForDifferentNet(regionId)) return false
-      for (const portId of [fromPortId, toPortId]) {
-        const assignedNetId = this.state.portAssignment[portId]!
-        if (assignedNetId !== -1 && assignedNetId !== routeNetId) return false
+  loadReplacementPaths(
+    inputSolver: TinyHyperGraphSolver,
+    replacements: Array<{
+      routeId: RouteId
+      path: ReplacementPathSegment[]
+    }>,
+    congestionFactor: number,
+  ): boolean {
+    this.resetForRoutes(
+      inputSolver,
+      replacements.map(({ routeId }) => routeId),
+      congestionFactor,
+    )
+
+    for (const { routeId, path } of replacements) {
+      const routeNetId = this.problem.routeNet[routeId]!
+      this.state.currentRouteId = routeId
+      this.state.currentRouteNetId = routeNetId
+      const touchedRegionIds = new Set<RegionId>()
+
+      for (const { regionId, fromPortId, toPortId } of path) {
+        if (this.isRegionReservedForDifferentNet(regionId)) return false
+        for (const portId of [fromPortId, toPortId]) {
+          const assignedNetId = this.state.portAssignment[portId]!
+          if (assignedNetId !== -1 && assignedNetId !== routeNetId) {
+            return false
+          }
+        }
+
+        if (this.writableRegionMask[regionId] === 0) {
+          this.state.regionSegments[regionId] = [
+            ...this.state.regionSegments[regionId]!,
+          ]
+          this.writableRegionMask[regionId] = 1
+          this.writableRegionIds.push(regionId)
+        }
+        this.state.regionSegments[regionId]!.push([
+          routeId,
+          fromPortId,
+          toPortId,
+        ])
+        this.state.portAssignment[fromPortId] = routeNetId
+        this.state.portAssignment[toPortId] = routeNetId
+        touchedRegionIds.add(regionId)
       }
 
-      if (this.writableRegionMask[regionId] === 0) {
-        this.state.regionSegments[regionId] = [
-          ...this.state.regionSegments[regionId]!,
-        ]
-        this.writableRegionMask[regionId] = 1
+      for (const regionId of touchedRegionIds) {
+        this.state.regionSegments[regionId]!.sort(
+          (left, right) => left[0] - right[0],
+        )
+        this.rebuildRegionCache(regionId)
       }
-      this.state.regionSegments[regionId]!.push([routeId, fromPortId, toPortId])
-      this.state.portAssignment[fromPortId] = routeNetId
-      this.state.portAssignment[toPortId] = routeNetId
-      touchedRegionIds.add(regionId)
+      this.replacementPathByRouteId.set(routeId, [...path])
+      this.replacementRouteSegmentCountByRouteId[routeId] = path.length
+      let layerChangeCount = 0
+      let segmentLength = 0
+      for (const { fromPortId, toPortId } of path) {
+        if (this.topology.portZ[fromPortId] !== this.topology.portZ[toPortId]) {
+          layerChangeCount += 1
+        }
+        segmentLength += Math.hypot(
+          this.topology.portX[toPortId]! - this.topology.portX[fromPortId]!,
+          this.topology.portY[toPortId]! - this.topology.portY[fromPortId]!,
+        )
+      }
+      this.replacementRouteLayerChangeCountByRouteId[routeId] = layerChangeCount
+      this.replacementRouteSegmentLengthByRouteId[routeId] = segmentLength
+      this.replacementRouteSegmentCount += path.length
     }
 
-    for (const regionId of touchedRegionIds) {
-      this.state.regionSegments[regionId]!.sort(
-        (left, right) => left[0] - right[0],
-      )
-      this.rebuildRegionCache(regionId)
-    }
-    this.replacementRouteSegmentCount = path.length
+    this.state.currentRouteId = undefined
+    this.state.currentRouteNetId = undefined
     this.solved = true
     return true
   }
@@ -409,9 +668,13 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
   rescoreForOptimizer(inputSolver: TinyHyperGraphSolver) {
     this.TRACE_DENSITY_COST_FACTOR = inputSolver.TRACE_DENSITY_COST_FACTOR
     this.REGION_COST_MODEL = inputSolver.REGION_COST_MODEL
-    for (let regionId = 0; regionId < this.topology.regionCount; regionId++) {
+    for (const regionId of this.writableRegionIds) {
       this.rebuildRegionCache(regionId)
     }
+  }
+
+  getChangedRegionIds(): readonly RegionId[] {
+    return this.writableRegionIds
   }
 
   private rebuildRegionCache(regionId: RegionId) {
@@ -438,22 +701,23 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
 }
 
 /**
- * Improves a solved hypergraph with alternating boundary-port swaps and
- * graph-wide route replacements. Boundary mutations change both sides
- * together, and replacement candidates retain every other route. Peak-cost
- * reductions are always accepted; moves on a peak plateau must improve the
- * remaining physical objectives without worsening any of them.
+ * Improves a solved hypergraph with alternating atomic boundary permutations,
+ * graph-wide route replacements, and dependency-guided two-route ejection
+ * chains. Boundary mutations change both sides together, and replacement
+ * candidates retain every route outside their exact ejection set. Peak-cost
+ * reductions are accepted only when downstream routing risk does not worsen;
+ * moves on a peak plateau must improve the remaining physical objectives
+ * without worsening any of them.
  */
 export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   MAX_MUTATIONS = Number.POSITIVE_INFINITY
   MAX_REROUTE_MUTATIONS = Number.POSITIVE_INFINITY
   MAX_HOT_REGIONS = Number.POSITIVE_INFINITY
-  REROUTE_MAX_ITERATIONS = 10_000
+  REROUTE_MAX_ITERATIONS = Number.POSITIVE_INFINITY
   MAX_REROUTE_ROUTES = Number.POSITIVE_INFINITY
   // The core path cost already includes the exact marginal region cost.
-  // Adding multiples of existing congestion produces a heuristic portfolio,
-  // repeats the same A* work, and can select paths that do not minimize the
-  // optimizer's objective. Search the exact marginal objective once.
+  // Search that deterministic objective once; physical-risk invariants are
+  // enforced when the completed replacement is scored.
   REROUTE_CONGESTION_FACTORS = [0]
   MAX_REROUTE_SEGMENT_INCREASE = Number.POSITIVE_INFINITY
 
@@ -462,10 +726,13 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   currentSummary: UnravelRegionCostSummary
   acceptedMutationCount = 0
   acceptedSwapMutationCount = 0
+  acceptedCycleMutationCount = 0
   acceptedRerouteMutationCount = 0
+  acceptedPairRerouteMutationCount = 0
   evaluatedMutationCount = 0
   rejectedRerouteDetourCount = 0
   rejectedRerouteLayerChangeCount = 0
+  rejectedReroutePhysicalRiskCount = 0
   rejectedCrossLayerSwapCount = 0
   prunedRerouteSearchCount = 0
   rerouteSearchIterationCount = 0
@@ -474,9 +741,19 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
 
   private readonly endpointPortMask: Int8Array
   private readonly initialRouteSegmentCounts: Int32Array
+  private readonly routeLayerChangeCountByRouteId: Int32Array
+  private readonly routeSegmentLengthByRouteId: Float64Array
   private readonly routingRiskOwnerByRouteId: Int32Array
+  private readonly physicalPointIdByPortId: Int32Array
+  private routingRiskByRegion: Float64Array
+  private segmentRoutingRiskByRegion: Float64Array
+  private segmentLengthByRegion: Float64Array
   private routeReplacementSolver?: SingleRouteReplacementSolver
   private pendingReroutePaths: CachedReroutePath[] = []
+  private readonly rerouteDependencyRouteIdsByRouteId = new Map<
+    RouteId,
+    RouteId[]
+  >()
   private optimizationPhase: "initial_untwist" | "reroute" | "final_untwist" =
     "initial_untwist"
   private reachedRerouteLimit = false
@@ -565,7 +842,22 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
 
     this.endpointPortMask = new Int8Array(this.topology.portCount)
     this.initialRouteSegmentCounts = new Int32Array(this.problem.routeCount)
+    this.routeLayerChangeCountByRouteId = new Int32Array(
+      this.problem.routeCount,
+    )
+    this.routeSegmentLengthByRouteId = new Float64Array(this.problem.routeCount)
     this.routingRiskOwnerByRouteId = new Int32Array(this.problem.routeCount)
+    this.physicalPointIdByPortId = new Int32Array(this.topology.portCount)
+    const physicalPointIdByKey = new Map<string, number>()
+    for (let portId = 0; portId < this.topology.portCount; portId++) {
+      const key = `${this.topology.portX[portId]},${this.topology.portY[portId]},${this.topology.portZ[portId]}`
+      let physicalPointId = physicalPointIdByKey.get(key)
+      if (physicalPointId === undefined) {
+        physicalPointId = physicalPointIdByKey.size
+        physicalPointIdByKey.set(key, physicalPointId)
+      }
+      this.physicalPointIdByPortId[portId] = physicalPointId
+    }
     const routingRiskOwnerIdByName = new Map<string, number>()
     for (let routeId = 0; routeId < this.problem.routeCount; routeId++) {
       const metadata = this.problem.routeMetadata?.[routeId] as
@@ -588,13 +880,27 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       this.routingRiskOwnerByRouteId[routeId] = ownerId
       this.endpointPortMask[this.problem.routeStartPort[routeId]!] = 1
       this.endpointPortMask[this.problem.routeEndPort[routeId]!] = 1
-      this.initialRouteSegmentCounts[routeId] = this.getRouteSegmentCount(
-        inputSolver,
-        routeId,
-      )
+    }
+    for (const segments of this.state.regionSegments) {
+      for (const [routeId, fromPortId, toPortId] of segments) {
+        this.initialRouteSegmentCounts[routeId] += 1
+        if (this.topology.portZ[fromPortId] !== this.topology.portZ[toPortId]) {
+          this.routeLayerChangeCountByRouteId[routeId] += 1
+        }
+        this.routeSegmentLengthByRouteId[routeId] += this.computeSegmentLength(
+          this,
+          fromPortId,
+          toPortId,
+        )
+      }
     }
 
-    this.initialSummary = this.summarizeCurrentState()
+    const initialScoredState = this.summarizeSolverState(this)
+    this.routingRiskByRegion = initialScoredState.routingRiskByRegion
+    this.segmentRoutingRiskByRegion =
+      initialScoredState.segmentRoutingRiskByRegion
+    this.segmentLengthByRegion = initialScoredState.segmentLengthByRegion
+    this.initialSummary = initialScoredState.summary
     this.currentSummary = { ...this.initialSummary }
   }
 
@@ -603,14 +909,19 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       ...this.stats,
       initialMaxRegionCost: this.initialSummary.maxRegionCost,
       initialTotalRegionCost: this.initialSummary.totalRegionCost,
+      initialTotalSegmentLength: this.initialSummary.totalSegmentLength,
       finalMaxRegionCost: this.currentSummary.maxRegionCost,
       finalTotalRegionCost: this.currentSummary.totalRegionCost,
+      finalTotalSegmentLength: this.currentSummary.totalSegmentLength,
       acceptedMutationCount: 0,
       acceptedSwapMutationCount: 0,
+      acceptedCycleMutationCount: 0,
       acceptedRerouteMutationCount: 0,
+      acceptedPairRerouteMutationCount: 0,
       evaluatedMutationCount: 0,
       rejectedRerouteDetourCount: 0,
       rejectedRerouteLayerChangeCount: 0,
+      rejectedReroutePhysicalRiskCount: 0,
       rejectedCrossLayerSwapCount: 0,
       prunedRerouteSearchCount: 0,
       rerouteSearchIterationCount: 0,
@@ -633,10 +944,10 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     // route, and normalize again after every accepted replacement. Comparing
     // reroutes from locally untwisted states avoids letting a temporary port
     // ordering artifact steer the next global search.
-    let mutation: SwapMutation | RerouteMutation | undefined
+    let mutation: BoundaryMutation | RerouteMutation | undefined
     while (!mutation) {
       if (this.optimizationPhase === "initial_untwist") {
-        mutation = this.findBestSwapMutation()
+        mutation = this.findBestSwapMutation() ?? this.findBestCycleMutation()
         if (!mutation) this.optimizationPhase = "reroute"
         continue
       }
@@ -647,12 +958,13 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
           this.optimizationPhase = "final_untwist"
           continue
         }
-        mutation = this.findBestRerouteMutation()
+        mutation =
+          this.findBestRerouteMutation() ?? this.findBestPairRerouteMutation()
         if (!mutation) this.optimizationPhase = "final_untwist"
         continue
       }
 
-      mutation = this.findBestSwapMutation()
+      mutation = this.findBestSwapMutation() ?? this.findBestCycleMutation()
       if (!mutation) {
         this.finishOptimization(
           this.reachedRerouteLimit ? "reroute_limit" : "local_optimum",
@@ -661,13 +973,21 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       }
     }
 
-    if (mutation.kind === "swap") {
-      this.applySwapMutation(mutation)
-      this.acceptedSwapMutationCount += 1
-    } else {
+    if (mutation.kind === "reroute") {
       this.applyRerouteMutation(mutation)
       this.acceptedRerouteMutationCount += 1
+      if (mutation.routeIds.length === 2) {
+        this.acceptedPairRerouteMutationCount += 1
+      }
       this.optimizationPhase = "initial_untwist"
+    } else {
+      this.applyBoundaryMutation(mutation)
+      if (mutation.kind === "swap") {
+        this.acceptedSwapMutationCount += 1
+      } else {
+        this.acceptedCycleMutationCount += 1
+        this.optimizationPhase = "initial_untwist"
+      }
     }
     this.acceptedMutationCount += 1
     this.currentSummary = mutation.summary
@@ -675,70 +995,34 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       ...this.stats,
       finalMaxRegionCost: this.currentSummary.maxRegionCost,
       finalTotalRegionCost: this.currentSummary.totalRegionCost,
+      finalTotalSegmentLength: this.currentSummary.totalSegmentLength,
       acceptedMutationCount: this.acceptedMutationCount,
       acceptedSwapMutationCount: this.acceptedSwapMutationCount,
+      acceptedCycleMutationCount: this.acceptedCycleMutationCount,
       acceptedRerouteMutationCount: this.acceptedRerouteMutationCount,
+      acceptedPairRerouteMutationCount: this.acceptedPairRerouteMutationCount,
       evaluatedMutationCount: this.evaluatedMutationCount,
       rejectedRerouteDetourCount: this.rejectedRerouteDetourCount,
       rejectedRerouteLayerChangeCount: this.rejectedRerouteLayerChangeCount,
+      rejectedReroutePhysicalRiskCount: this.rejectedReroutePhysicalRiskCount,
       rejectedCrossLayerSwapCount: this.rejectedCrossLayerSwapCount,
       prunedRerouteSearchCount: this.prunedRerouteSearchCount,
       rerouteSearchIterationCount: this.rerouteSearchIterationCount,
       rerouteSearchCount: this.rerouteSearchCount,
       reusedRerouteCandidateCount: this.reusedRerouteCandidateCount,
       lastMutationKind: mutation.kind,
-      ...(mutation.kind === "swap"
+      ...(mutation.kind === "reroute"
         ? {
-            lastMutationPort1Id: mutation.port1Id,
-            lastMutationPort2Id: mutation.port2Id,
-            lastMutationRegion1Id: mutation.region1Id,
-            lastMutationRegion2Id: mutation.region2Id,
+            lastMutationRouteId: mutation.routeId,
+            lastMutationRouteIds: mutation.routeIds,
+            lastMutationCongestionFactor: mutation.congestionFactor,
           }
         : {
-            lastMutationRouteId: mutation.routeId,
-            lastMutationCongestionFactor: mutation.congestionFactor,
+            lastMutationPort1Id: mutation.permutation.slots[0]!.portId,
+            lastMutationPort2Id: mutation.permutation.slots[1]!.portId,
+            lastMutationRegion1Id: mutation.region1Id,
+            lastMutationRegion2Id: mutation.region2Id,
           }),
-    }
-  }
-
-  private summarizeCurrentState(): UnravelRegionCostSummary {
-    let maxRegionCost = 0
-    let totalRegionCost = 0
-    let maxRoutingRisk = 0
-    let squaredRoutingRisk = 0
-    let totalRoutingRisk = 0
-    let maxRegionSegmentCount = 0
-    let squaredRegionSegmentCount = 0
-
-    for (
-      let regionId = 0;
-      regionId < this.state.regionIntersectionCaches.length;
-      regionId++
-    ) {
-      const cache = this.state.regionIntersectionCaches[regionId]!
-      maxRegionCost = Math.max(maxRegionCost, cache.existingRegionCost)
-      totalRegionCost += cache.existingRegionCost
-      if (this.REGION_COST_MODEL === "routing-complexity") {
-        maxRegionSegmentCount = Math.max(
-          maxRegionSegmentCount,
-          cache.existingSegmentCount,
-        )
-        squaredRegionSegmentCount += cache.existingSegmentCount ** 2
-      }
-      const routingRisk = this.computeExactRoutingRiskForRegion(this, regionId)
-      maxRoutingRisk = Math.max(maxRoutingRisk, routingRisk)
-      squaredRoutingRisk += routingRisk * routingRisk
-      totalRoutingRisk += routingRisk
-    }
-
-    return {
-      maxRegionCost,
-      totalRegionCost,
-      maxRegionSegmentCount,
-      squaredRegionSegmentCount,
-      maxRoutingRisk,
-      squaredRoutingRisk,
-      totalRoutingRisk,
     }
   }
 
@@ -747,9 +1031,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     sameLayerIntersections: number,
     transitionPairIntersections: number,
     entryExitLayerChanges: number,
-  ): number {
-    if (this.REGION_COST_MODEL !== "routing-complexity") return 0
-
+    traceCount: number,
+  ) {
     const metadata = this.topology.regionMetadata?.[regionId]
     if (
       typeof metadata === "object" &&
@@ -759,15 +1042,28 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       return 0
     }
 
-    return computeRoutingRiskRegionCost(
-      this.topology.regionWidth[regionId]!,
-      this.topology.regionHeight[regionId]!,
+    return computeRoutingRiskRegionCostWithPreparedCapacity(
+      this.routingRiskCapacityByRegion[regionId]!,
       sameLayerIntersections,
       transitionPairIntersections,
       entryExitLayerChanges,
-      this.topology.regionAvailableZMask?.[regionId] ?? 0,
-      this.minViaPadDiameter,
+      traceCount,
     )
+  }
+
+  private remapPortForBoundaryPermutation(
+    routeId: RouteId,
+    portId: PortId,
+    permutation?: BoundaryPermutation,
+  ): PortId {
+    if (!permutation) return portId
+    for (let index = 0; index < permutation.slots.length; index++) {
+      const source = permutation.slots[index]!
+      if (source.routeId === routeId && source.portId === portId) {
+        return permutation.destinationPortIds[index]!
+      }
+    }
+    return portId
   }
 
   /**
@@ -776,52 +1072,73 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
    * not electrical net or tiny route id, and only the first two distinct
    * points for a connection form its chord in a region.
    */
-  private computeExactRoutingRiskForRegion(
+  private computePhysicalRoutingRisksForRegion(
     solver: TinyHyperGraphSolver,
     regionId: RegionId,
     options?: {
       removedRouteId?: RouteId
-      swap?: { left: BoundaryPortSlot; right: BoundaryPortSlot }
+      removedRouteIds?: ReadonlySet<RouteId>
+      permutation?: BoundaryPermutation
     },
-  ): number {
-    if (this.REGION_COST_MODEL !== "routing-complexity") return 0
-
+  ) {
     const pointsByOwner = new Map<number, PortId[]>()
+    const segments: Array<{
+      routeId: RouteId
+      fromPortId: PortId
+      toPortId: PortId
+      lesserAngle: number
+      greaterAngle: number
+      layerMask: number
+    }> = []
+    let segmentEntryExitLayerChanges = 0
     const addDistinctPoint = (ownerId: number, portId: PortId) => {
       const points = pointsByOwner.get(ownerId) ?? []
-      const x = this.topology.portX[portId]
-      const y = this.topology.portY[portId]
-      const z = this.topology.portZ[portId]
       if (
         !points.some(
           (existingPortId) =>
-            this.topology.portX[existingPortId] === x &&
-            this.topology.portY[existingPortId] === y &&
-            this.topology.portZ[existingPortId] === z,
+            this.physicalPointIdByPortId[existingPortId] ===
+            this.physicalPointIdByPortId[portId],
         )
       ) {
         points.push(portId)
       }
       pointsByOwner.set(ownerId, points)
     }
-    const swapPort = (routeId: RouteId, portId: PortId) => {
-      const swap = options?.swap
-      if (!swap) return portId
-      if (swap.left.routeId === routeId && portId === swap.left.portId) {
-        return swap.right.portId
-      }
-      if (swap.right.routeId === routeId && portId === swap.right.portId) {
-        return swap.left.portId
-      }
-      return portId
-    }
-
     for (const [routeId, originalFromPortId, originalToPortId] of solver.state
       .regionSegments[regionId]!) {
-      if (routeId === options?.removedRouteId) continue
+      if (
+        routeId === options?.removedRouteId ||
+        options?.removedRouteIds?.has(routeId)
+      ) {
+        continue
+      }
       const ownerId = this.routingRiskOwnerByRouteId[routeId]!
-      addDistinctPoint(ownerId, swapPort(routeId, originalFromPortId))
-      addDistinctPoint(ownerId, swapPort(routeId, originalToPortId))
+      const fromPortId = this.remapPortForBoundaryPermutation(
+        routeId,
+        originalFromPortId,
+        options?.permutation,
+      )
+      const toPortId = this.remapPortForBoundaryPermutation(
+        routeId,
+        originalToPortId,
+        options?.permutation,
+      )
+      addDistinctPoint(ownerId, fromPortId)
+      addDistinctPoint(ownerId, toPortId)
+      const geometry = this.populateSegmentGeometryScratch(
+        regionId,
+        fromPortId,
+        toPortId,
+      )
+      segments.push({
+        routeId,
+        fromPortId,
+        toPortId,
+        lesserAngle: geometry.lesserAngle,
+        greaterAngle: geometry.greaterAngle,
+        layerMask: geometry.layerMask,
+      })
+      segmentEntryExitLayerChanges += geometry.entryExitLayerChanges
     }
 
     const lesserAngles: number[] = []
@@ -877,12 +1194,66 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       }
     }
 
-    return this.computeRoutingRiskForCounts(
+    const groupedRisk = this.computeRoutingRiskForCounts(
       regionId,
       sameLayerIntersections,
       transitionPairIntersections,
       entryExitLayerChanges,
+      pointsByOwner.size,
     )
+
+    let segmentSameLayerIntersections = 0
+    let segmentTransitionPairIntersections = 0
+    for (let leftIndex = 0; leftIndex < segments.length; leftIndex++) {
+      const left = segments[leftIndex]!
+      for (
+        let rightIndex = leftIndex + 1;
+        rightIndex < segments.length;
+        rightIndex++
+      ) {
+        const right = segments[rightIndex]!
+        if (left.routeId === right.routeId) continue
+        const leftFromPointId = this.physicalPointIdByPortId[left.fromPortId]!
+        const leftToPointId = this.physicalPointIdByPortId[left.toPortId]!
+        const rightFromPointId = this.physicalPointIdByPortId[right.fromPortId]!
+        const rightToPointId = this.physicalPointIdByPortId[right.toPortId]!
+        if (
+          leftFromPointId === rightFromPointId ||
+          leftFromPointId === rightToPointId ||
+          leftToPointId === rightFromPointId ||
+          leftToPointId === rightToPointId
+        ) {
+          continue
+        }
+        const intersects =
+          (right.lesserAngle < left.lesserAngle &&
+            left.lesserAngle < right.greaterAngle) !==
+          (right.lesserAngle < left.greaterAngle &&
+            left.greaterAngle < right.greaterAngle)
+        if (!intersects) continue
+        const intersectionKind = classifyIntersectionLayerMasks(
+          left.layerMask,
+          right.layerMask,
+          "routing-complexity",
+        )
+        if (intersectionKind === "same-layer") {
+          segmentSameLayerIntersections += 1
+        } else if (intersectionKind === "transition-pair") {
+          segmentTransitionPairIntersections += 1
+        }
+      }
+    }
+
+    return {
+      groupedRisk,
+      segmentRisk: this.computeRoutingRiskForCounts(
+        regionId,
+        segmentSameLayerIntersections,
+        segmentTransitionPairIntersections,
+        segmentEntryExitLayerChanges,
+        segments.length,
+      ),
+    }
   }
 
   private getBoundaryPortGroups(): BoundaryPortSlot[][] {
@@ -946,72 +1317,220 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       .map((group) => group.sort((left, right) => left.portId - right.portId))
   }
 
-  private findBestSwapMutation(): SwapMutation | undefined {
-    const routingRiskByRegion = Float64Array.from(
-      this.state.regionIntersectionCaches,
-      (_, regionId) => this.computeExactRoutingRiskForRegion(this, regionId),
-    )
-    const squaredRoutingRiskByRegion = Float64Array.from(
-      routingRiskByRegion,
-      (routingRisk) => routingRisk * routingRisk,
-    )
-    const rankedRegionIds = Array.from(
-      { length: this.topology.regionCount },
-      (_, regionId) => regionId,
-    ).sort(
-      (left, right) =>
-        this.state.regionIntersectionCaches[right]!.existingRegionCost -
-          this.state.regionIntersectionCaches[left]!.existingRegionCost ||
-        left - right,
-    )
-    const getUnaffectedMaxRegionCost = (
+  private createBoundaryScoringContext(): BoundaryScoringContext {
+    const routingRiskByRegion = this.routingRiskByRegion
+    const segmentRoutingRiskByRegion = this.segmentRoutingRiskByRegion
+    const rankRegionIds = (values: ArrayLike<number>) =>
+      Array.from(
+        { length: this.topology.regionCount },
+        (_, regionId) => regionId,
+      ).sort((left, right) => values[right]! - values[left]! || left - right)
+    const getUnaffectedMax = (
+      rankedRegionIds: RegionId[],
+      values: ArrayLike<number>,
       region1Id: RegionId,
       region2Id: RegionId,
     ) => {
       for (const regionId of rankedRegionIds) {
         if (regionId !== region1Id && regionId !== region2Id) {
-          return this.state.regionIntersectionCaches[regionId]!
-            .existingRegionCost
+          return values[regionId]!
         }
       }
       return 0
     }
-    const rankedRoutingRiskRegionIds = Array.from(
-      { length: this.topology.regionCount },
-      (_, regionId) => regionId,
-    ).sort(
-      (left, right) =>
-        routingRiskByRegion[right]! - routingRiskByRegion[left]! ||
-        left - right,
+    const regionCosts = Float64Array.from(
+      this.state.regionIntersectionCaches,
+      (cache) => cache.existingRegionCost,
     )
-    const getUnaffectedMaxRoutingRisk = (
-      region1Id: RegionId,
-      region2Id: RegionId,
-    ) => {
-      for (const regionId of rankedRoutingRiskRegionIds) {
-        if (regionId !== region1Id && regionId !== region2Id) {
-          return routingRiskByRegion[regionId]!
-        }
-      }
-      return 0
+    const rankedRegionIds = rankRegionIds(regionCosts)
+    const rankedRoutingRiskRegionIds = rankRegionIds(routingRiskByRegion)
+    const rankedSegmentRoutingRiskRegionIds = rankRegionIds(
+      segmentRoutingRiskByRegion,
+    )
+
+    return {
+      squaredRoutingRiskByRegion: Float64Array.from(
+        routingRiskByRegion,
+        (routingRisk) => routingRisk * routingRisk,
+      ),
+      getUnaffectedMaxRegionCost: (region1Id, region2Id) =>
+        getUnaffectedMax(rankedRegionIds, regionCosts, region1Id, region2Id),
+      getUnaffectedMaxRoutingRisk: (region1Id, region2Id) =>
+        getUnaffectedMax(
+          rankedRoutingRiskRegionIds,
+          routingRiskByRegion,
+          region1Id,
+          region2Id,
+        ),
+      getUnaffectedMaxSegmentRoutingRisk: (region1Id, region2Id) =>
+        getUnaffectedMax(
+          rankedSegmentRoutingRiskRegionIds,
+          segmentRoutingRiskByRegion,
+          region1Id,
+          region2Id,
+        ),
+    }
+  }
+
+  private scoreBoundaryPermutation(
+    permutation: BoundaryPermutation,
+    context: BoundaryScoringContext,
+  ): BoundaryMutationScore | undefined {
+    const { region1Id, region2Id } = permutation.slots[0]!
+    const crossesLayer = permutation.slots.some(
+      (source, index) =>
+        this.topology.portZ[source.portId] !==
+        this.topology.portZ[permutation.destinationPortIds[index]!],
+    )
+    if (
+      this.REGION_COST_MODEL === "routing-complexity" &&
+      crossesLayer &&
+      !this.preservesRouteLayerChangeCountsAfterPermutation(permutation)
+    ) {
+      this.rejectedCrossLayerSwapCount += 1
+      return
+    }
+    this.evaluatedMutationCount += 1
+
+    const oldRegion1Cost =
+      this.state.regionIntersectionCaches[region1Id]!.existingRegionCost
+    const oldRegion2Cost =
+      this.state.regionIntersectionCaches[region2Id]!.existingRegionCost
+    const region1PrimaryMetrics =
+      this.computePrimaryRegionMetricsAfterPermutation(region1Id, permutation)
+    const region2PrimaryMetrics =
+      this.computePrimaryRegionMetricsAfterPermutation(region2Id, permutation)
+    const candidateMaxRegionCost = Math.max(
+      context.getUnaffectedMaxRegionCost(region1Id, region2Id),
+      region1PrimaryMetrics.regionCost,
+      region2PrimaryMetrics.regionCost,
+    )
+    const candidateTotalRegionCost =
+      this.currentSummary.totalRegionCost -
+      oldRegion1Cost -
+      oldRegion2Cost +
+      region1PrimaryMetrics.regionCost +
+      region2PrimaryMetrics.regionCost
+
+    // Physical-risk scoring is the expensive part of a boundary evaluation.
+    // The primary objective is independent of those metrics, so this exact
+    // bound rejects only candidates that cannot possibly be accepted.
+    if (
+      candidateMaxRegionCost >
+        this.currentSummary.maxRegionCost + COST_EPSILON ||
+      (candidateMaxRegionCost >=
+        this.currentSummary.maxRegionCost - COST_EPSILON &&
+        candidateTotalRegionCost >=
+          this.currentSummary.totalRegionCost - COST_EPSILON)
+    ) {
+      return
     }
 
-    let bestMutation: SwapMutation | undefined
-    for (const group of this.getBoundaryPortGroups()) {
-      const { region1Id, region2Id } = group[0]!
-      const oldRegion1Cost =
-        this.state.regionIntersectionCaches[region1Id]!.existingRegionCost
-      const oldRegion2Cost =
-        this.state.regionIntersectionCaches[region2Id]!.existingRegionCost
-      const unaffectedMaxRegionCost = getUnaffectedMaxRegionCost(
-        region1Id,
-        region2Id,
-      )
-      const unaffectedMaxRoutingRisk = getUnaffectedMaxRoutingRisk(
-        region1Id,
-        region2Id,
-      )
+    const region1PhysicalRisks = this.computePhysicalRoutingRisksForRegion(
+      this,
+      region1Id,
+      { permutation },
+    )
+    const region2PhysicalRisks = this.computePhysicalRoutingRisksForRegion(
+      this,
+      region2Id,
+      { permutation },
+    )
+    const summary = {
+      maxRegionCost: candidateMaxRegionCost,
+      maxRoutingRisk: Math.max(
+        context.getUnaffectedMaxRoutingRisk(region1Id, region2Id),
+        region1PhysicalRisks.groupedRisk,
+        region2PhysicalRisks.groupedRisk,
+      ),
+      maxSegmentRoutingRisk: Math.max(
+        context.getUnaffectedMaxSegmentRoutingRisk(region1Id, region2Id),
+        region1PhysicalRisks.segmentRisk,
+        region2PhysicalRisks.segmentRisk,
+      ),
+      squaredRoutingRisk:
+        this.currentSummary.squaredRoutingRisk -
+        context.squaredRoutingRiskByRegion[region1Id]! -
+        context.squaredRoutingRiskByRegion[region2Id]! +
+        region1PhysicalRisks.groupedRisk ** 2 +
+        region2PhysicalRisks.groupedRisk ** 2,
+      totalRoutingRisk:
+        this.currentSummary.totalRoutingRisk -
+        this.routingRiskByRegion[region1Id]! -
+        this.routingRiskByRegion[region2Id]! +
+        region1PhysicalRisks.groupedRisk +
+        region2PhysicalRisks.groupedRisk,
+      maxRegionSegmentCount: this.currentSummary.maxRegionSegmentCount,
+      squaredRegionSegmentCount: this.currentSummary.squaredRegionSegmentCount,
+      totalSegmentLength:
+        this.currentSummary.totalSegmentLength -
+        this.segmentLengthByRegion[region1Id]! -
+        this.segmentLengthByRegion[region2Id]! +
+        region1PrimaryMetrics.segmentLength +
+        region2PrimaryMetrics.segmentLength,
+      totalRegionCost: candidateTotalRegionCost,
+    }
+    if (!isSwapParetoImprovement(summary, this.currentSummary)) return
 
+    return {
+      region1Id,
+      region2Id,
+      region1Cost: region1PrimaryMetrics.regionCost,
+      region2Cost: region2PrimaryMetrics.regionCost,
+      region1RoutingRisk: region1PhysicalRisks.groupedRisk,
+      region2RoutingRisk: region2PhysicalRisks.groupedRisk,
+      region1SegmentRoutingRisk: region1PhysicalRisks.segmentRisk,
+      region2SegmentRoutingRisk: region2PhysicalRisks.segmentRisk,
+      region1SegmentLength: region1PrimaryMetrics.segmentLength,
+      region2SegmentLength: region2PrimaryMetrics.segmentLength,
+      summary,
+    }
+  }
+
+  private compareBoundaryMutationKeys(
+    left: BoundaryMutation,
+    right: BoundaryMutation,
+  ) {
+    const leftKey = [
+      ...left.permutation.slots.map(({ portId }) => portId),
+      ...left.permutation.destinationPortIds,
+    ]
+    const rightKey = [
+      ...right.permutation.slots.map(({ portId }) => portId),
+      ...right.permutation.destinationPortIds,
+    ]
+    for (
+      let index = 0;
+      index < Math.min(leftKey.length, rightKey.length);
+      index++
+    ) {
+      if (leftKey[index] !== rightKey[index]) {
+        return leftKey[index]! - rightKey[index]!
+      }
+    }
+    return leftKey.length - rightKey.length
+  }
+
+  private selectBetterBoundaryMutation(
+    bestMutation: BoundaryMutation | undefined,
+    mutation: BoundaryMutation,
+  ) {
+    if (!bestMutation) return mutation
+    const comparison = compareRegionCostSummaries(
+      mutation.summary,
+      bestMutation.summary,
+    )
+    return comparison < 0 ||
+      (comparison === 0 &&
+        this.compareBoundaryMutationKeys(mutation, bestMutation) < 0)
+      ? mutation
+      : bestMutation
+  }
+
+  private findBestSwapMutation(): BoundaryMutation | undefined {
+    const context = this.createBoundaryScoringContext()
+    let bestMutation: BoundaryMutation | undefined
+    for (const group of this.getBoundaryPortGroups()) {
       for (let leftIndex = 0; leftIndex < group.length; leftIndex++) {
         const left = group[leftIndex]!
         for (
@@ -1025,124 +1544,105 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
           if (left.routeId !== undefined && left.routeId === right.routeId) {
             continue
           }
-          // A cross-layer untwist may move an existing transition across this
-          // boundary, but it must not add or remove transitions for either
-          // route. That keeps the mutation local instead of silently changing
-          // a long-range layer assignment that this two-region cost cannot see.
-          if (
-            this.REGION_COST_MODEL === "routing-complexity" &&
-            this.topology.portZ[left.portId] !==
-              this.topology.portZ[right.portId] &&
-            !this.preservesRouteLayerChangeCountsAfterSwap(left, right)
-          ) {
-            this.rejectedCrossLayerSwapCount += 1
-            continue
+          const permutation: BoundaryPermutation = {
+            slots: [left, right],
+            destinationPortIds: [right.portId, left.portId],
           }
-          this.evaluatedMutationCount += 1
-
-          const region1Metrics = this.computeRegionMetricsAfterSwap(
-            region1Id,
-            left,
-            right,
-          )
-          const region2Metrics = this.computeRegionMetricsAfterSwap(
-            region2Id,
-            left,
-            right,
-          )
-          const summary = {
-            maxRegionCost: Math.max(
-              unaffectedMaxRegionCost,
-              region1Metrics.regionCost,
-              region2Metrics.regionCost,
-            ),
-            maxRoutingRisk: Math.max(
-              unaffectedMaxRoutingRisk,
-              region1Metrics.routingRisk,
-              region2Metrics.routingRisk,
-            ),
-            squaredRoutingRisk:
-              this.currentSummary.squaredRoutingRisk -
-              squaredRoutingRiskByRegion[region1Id]! -
-              squaredRoutingRiskByRegion[region2Id]! +
-              region1Metrics.routingRisk ** 2 +
-              region2Metrics.routingRisk ** 2,
-            totalRoutingRisk:
-              this.currentSummary.totalRoutingRisk -
-              routingRiskByRegion[region1Id]! -
-              routingRiskByRegion[region2Id]! +
-              region1Metrics.routingRisk +
-              region2Metrics.routingRisk,
-            maxRegionSegmentCount: this.currentSummary.maxRegionSegmentCount,
-            squaredRegionSegmentCount:
-              this.currentSummary.squaredRegionSegmentCount,
-            totalRegionCost:
-              this.currentSummary.totalRegionCost -
-              oldRegion1Cost -
-              oldRegion2Cost +
-              region1Metrics.regionCost +
-              region2Metrics.regionCost,
-          }
-          if (!isParetoImprovement(summary, this.currentSummary)) {
-            continue
-          }
-
-          const mutation: SwapMutation = {
+          const score = this.scoreBoundaryPermutation(permutation, context)
+          if (!score) continue
+          bestMutation = this.selectBetterBoundaryMutation(bestMutation, {
             kind: "swap",
-            port1Id: left.portId,
-            port2Id: right.portId,
-            ...(left.routeId === undefined ? {} : { route1Id: left.routeId }),
-            ...(right.routeId === undefined ? {} : { route2Id: right.routeId }),
-            region1Id,
-            region2Id,
-            region1Cost: region1Metrics.regionCost,
-            region2Cost: region2Metrics.regionCost,
-            summary,
-          }
-          if (
-            !bestMutation ||
-            compareRegionCostSummaries(summary, bestMutation.summary) < 0 ||
-            (compareRegionCostSummaries(summary, bestMutation.summary) === 0 &&
-              (mutation.port1Id < bestMutation.port1Id ||
-                (mutation.port1Id === bestMutation.port1Id &&
-                  mutation.port2Id < bestMutation.port2Id)))
+            permutation,
+            ...score,
+          })
+        }
+      }
+    }
+    return bestMutation
+  }
+
+  private findBestCycleMutation(): BoundaryMutation | undefined {
+    const context = this.createBoundaryScoringContext()
+    let bestMutation: BoundaryMutation | undefined
+    for (const group of this.getBoundaryPortGroups()) {
+      for (let firstIndex = 0; firstIndex < group.length; firstIndex++) {
+        for (
+          let secondIndex = firstIndex + 1;
+          secondIndex < group.length;
+          secondIndex++
+        ) {
+          for (
+            let thirdIndex = secondIndex + 1;
+            thirdIndex < group.length;
+            thirdIndex++
           ) {
-            bestMutation = mutation
+            const slots = [
+              group[firstIndex]!,
+              group[secondIndex]!,
+              group[thirdIndex]!,
+            ]
+            const routeIds = slots
+              .map(({ routeId }) => routeId)
+              .filter((routeId): routeId is RouteId => routeId !== undefined)
+            if (
+              routeIds.length === 0 ||
+              new Set(routeIds).size !== routeIds.length
+            ) {
+              continue
+            }
+            const destinationOrders = [
+              [slots[1]!.portId, slots[2]!.portId, slots[0]!.portId],
+              [slots[2]!.portId, slots[0]!.portId, slots[1]!.portId],
+            ]
+            for (const destinationPortIds of destinationOrders) {
+              const permutation: BoundaryPermutation = {
+                slots,
+                destinationPortIds,
+              }
+              const score = this.scoreBoundaryPermutation(permutation, context)
+              if (!score) continue
+              bestMutation = this.selectBetterBoundaryMutation(bestMutation, {
+                kind: "cycle",
+                permutation,
+                ...score,
+              })
+            }
           }
         }
       }
     }
-
     return bestMutation
   }
 
-  private preservesRouteLayerChangeCountsAfterSwap(
-    left: BoundaryPortSlot,
-    right: BoundaryPortSlot,
+  private preservesRouteLayerChangeCountsAfterPermutation(
+    permutation: BoundaryPermutation,
   ): boolean {
-    for (const routeId of [left.routeId, right.routeId]) {
-      if (routeId === undefined) continue
-
+    const routeIds = new Set(
+      permutation.slots
+        .map(({ routeId }) => routeId)
+        .filter((routeId): routeId is RouteId => routeId !== undefined),
+    )
+    const { region1Id, region2Id } = permutation.slots[0]!
+    for (const routeId of routeIds) {
       let currentLayerChangeCount = 0
-      let swappedLayerChangeCount = 0
-      for (const regionId of [left.region1Id, left.region2Id]) {
+      let permutedLayerChangeCount = 0
+      for (const regionId of [region1Id, region2Id]) {
         for (const [
           segmentRouteId,
           originalFromPortId,
           originalToPortId,
         ] of this.state.regionSegments[regionId]!) {
           if (segmentRouteId !== routeId) continue
-
-          let fromPortId = originalFromPortId
-          let toPortId = originalToPortId
-          if (left.routeId === routeId) {
-            if (fromPortId === left.portId) fromPortId = right.portId
-            if (toPortId === left.portId) toPortId = right.portId
-          } else if (right.routeId === routeId) {
-            if (fromPortId === right.portId) fromPortId = left.portId
-            if (toPortId === right.portId) toPortId = left.portId
-          }
-
+          const fromPortId = this.remapPortForBoundaryPermutation(
+            routeId,
+            originalFromPortId,
+            permutation,
+          )
+          const toPortId = this.remapPortForBoundaryPermutation(
+            routeId,
+            originalToPortId,
+            permutation,
+          )
           if (
             this.topology.portZ[originalFromPortId] !==
             this.topology.portZ[originalToPortId]
@@ -1152,14 +1652,12 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
           if (
             this.topology.portZ[fromPortId] !== this.topology.portZ[toPortId]
           ) {
-            swappedLayerChangeCount += 1
+            permutedLayerChangeCount += 1
           }
         }
       }
-
-      if (currentLayerChangeCount !== swappedLayerChangeCount) return false
+      if (currentLayerChangeCount !== permutedLayerChangeCount) return false
     }
-
     return true
   }
 
@@ -1244,15 +1742,20 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       // Extra transitions become extra vias in the detailed router and can
       // create pad/obstacle clearance failures outside the rerouted regions.
       if (
-        this.getRouteLayerChangeCount(candidateSolver, routeId) >
-        this.getRouteLayerChangeCount(this, routeId)
+        candidateSolver.replacementRouteLayerChangeCountByRouteId[routeId]! >
+        this.routeLayerChangeCountByRouteId[routeId]!
       ) {
         this.rejectedRerouteLayerChangeCount += 1
         return { reusable: false }
       }
 
       candidateSolver.rescoreForOptimizer(this)
-      const summary = this.summarizeSolverState(candidateSolver)
+      const scoredState = this.summarizeReplacementSolverState(candidateSolver)
+      const { summary } = scoredState
+      if (!isRoutingRiskNoWorse(summary, this.currentSummary)) {
+        this.rejectedReroutePhysicalRiskCount += 1
+        return { reusable: true }
+      }
       if (!isParetoImprovement(summary, this.currentSummary)) {
         return { reusable: true }
       }
@@ -1262,9 +1765,26 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         mutation: {
           kind: "reroute",
           routeId,
+          routeIds: [routeId],
           congestionFactor,
           replacementPath,
           replacementState: candidateSolver.getReplacementState(),
+          replacementRouteMetrics: [
+            {
+              routeId,
+              layerChangeCount:
+                candidateSolver.replacementRouteLayerChangeCountByRouteId[
+                  routeId
+                ]!,
+              segmentLength:
+                candidateSolver.replacementRouteSegmentLengthByRouteId[
+                  routeId
+                ]!,
+            },
+          ],
+          routingRiskByRegion: scoredState.routingRiskByRegion,
+          segmentRoutingRiskByRegion: scoredState.segmentRoutingRiskByRegion,
+          segmentLengthByRegion: scoredState.segmentLengthByRegion,
           summary,
         },
       }
@@ -1277,15 +1797,27 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       candidateSolver.solve()
       this.rerouteSearchCount += 1
       this.rerouteSearchIterationCount += candidateSolver.iterations
+      const replacementPath =
+        candidateSolver.solved && !candidateSolver.failed
+          ? candidateSolver.getReplacementPath(routeId)
+          : []
+      const dependencyRouteIds = new Set(candidateSolver.blockingRouteIds)
+      for (const { regionId } of replacementPath) {
+        for (const [otherRouteId] of candidateSolver.state.regionSegments[
+          regionId
+        ]!) {
+          if (otherRouteId !== routeId) dependencyRouteIds.add(otherRouteId)
+        }
+      }
+      this.rerouteDependencyRouteIdsByRouteId.set(
+        routeId,
+        [...dependencyRouteIds].sort((left, right) => left - right),
+      )
       if (!candidateSolver.solved || candidateSolver.failed) {
         this.evaluatedMutationCount += 1
         return { reusable: false }
       }
-      return scorePreparedCandidate(
-        routeId,
-        congestionFactor,
-        candidateSolver.getReplacementPath(routeId),
-      )
+      return scorePreparedCandidate(routeId, congestionFactor, replacementPath)
     }
     const selectBetterReroute = (
       bestMutation: RerouteMutation | undefined,
@@ -1374,6 +1906,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       this.pendingReroutePaths = [...reusablePathByKey.values()]
     }
 
+    this.rerouteDependencyRouteIdsByRouteId.clear()
     let bestMutation: RerouteMutation | undefined
     const reusablePathByKey = new Map(
       this.pendingReroutePaths.map((path) => [getReroutePathKey(path), path]),
@@ -1438,40 +1971,241 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     return bestMutation
   }
 
-  private getRouteSegmentCount(
-    solver: TinyHyperGraphSolver,
-    routeId: RouteId,
-  ): number {
-    let segmentCount = 0
-    for (const segments of solver.state.regionSegments) {
-      for (const [segmentRouteId] of segments) {
-        if (segmentRouteId === routeId) segmentCount += 1
-      }
-    }
-    return segmentCount
-  }
-
-  private getRouteLayerChangeCount(
-    solver: TinyHyperGraphSolver,
-    routeId: RouteId,
-  ): number {
-    let layerChangeCount = 0
-    for (const segments of solver.state.regionSegments) {
-      for (const [segmentRouteId, fromPortId, toPortId] of segments) {
-        if (segmentRouteId !== routeId) continue
-        if (
-          solver.topology.portZ[fromPortId] !== solver.topology.portZ[toPortId]
-        ) {
-          layerChangeCount += 1
+  /**
+   * Large-neighborhood repair for a one-route local optimum. Any strict peak
+   * reduction must change a route using a peak-cost region. Pair it only with
+   * routes measured on that route's A* dependency frontier: blocked-port
+   * owners and routes contributing cost along the solved replacement corridor.
+   * Remove the pair atomically and solve both deterministic route orders
+   * against the fixed remainder.
+   */
+  private findBestPairRerouteMutation(): RerouteMutation | undefined {
+    const peakRouteIds = [
+      ...new Set(
+        this.state.regionIntersectionCaches.flatMap((cache, regionId) =>
+          Math.abs(
+            cache.existingRegionCost - this.currentSummary.maxRegionCost,
+          ) <= COST_EPSILON
+            ? this.state.regionSegments[regionId]!.map(([routeId]) => routeId)
+            : [],
+        ),
+      ),
+    ].sort((left, right) => left - right)
+    if (peakRouteIds.length === 0) return
+    const pairKeys = new Set<string>()
+    const routePairs: Array<[RouteId, RouteId]> = []
+    for (const peakRouteId of peakRouteIds) {
+      const blockingRouteIds = new Set(
+        this.rerouteDependencyRouteIdsByRouteId.get(peakRouteId) ?? [],
+      )
+      for (const otherPeakRouteId of peakRouteIds) {
+        if (otherPeakRouteId !== peakRouteId) {
+          blockingRouteIds.add(otherPeakRouteId)
         }
       }
+      for (const segments of this.state.regionSegments) {
+        if (!segments.some(([routeId]) => routeId === peakRouteId)) continue
+        for (const [routeId] of segments) blockingRouteIds.add(routeId)
+      }
+      for (const [routeId, dependencies] of this
+        .rerouteDependencyRouteIdsByRouteId) {
+        if (dependencies.includes(peakRouteId)) blockingRouteIds.add(routeId)
+      }
+      for (const otherRouteId of blockingRouteIds) {
+        if (otherRouteId === peakRouteId) continue
+        const leftRouteId = Math.min(peakRouteId, otherRouteId)
+        const rightRouteId = Math.max(peakRouteId, otherRouteId)
+        const key = `${leftRouteId}:${rightRouteId}`
+        if (pairKeys.has(key)) continue
+        pairKeys.add(key)
+        routePairs.push([leftRouteId, rightRouteId])
+      }
     }
-    return layerChangeCount
+    routePairs.sort((left, right) => left[0] - right[0] || left[1] - right[1])
+    return this.findBestMultiRouteRerouteMutation(routePairs)
   }
 
-  private computeRegionMetricsWithoutRoute(
+  private getRouteSolveOrders(routeIds: RouteId[]): RouteId[][] {
+    if (routeIds.length <= 1) return [[...routeIds]]
+    const orders: RouteId[][] = []
+    for (let index = 0; index < routeIds.length; index++) {
+      const routeId = routeIds[index]!
+      const remainder = [
+        ...routeIds.slice(0, index),
+        ...routeIds.slice(index + 1),
+      ]
+      for (const suffix of this.getRouteSolveOrders(remainder)) {
+        orders.push([routeId, ...suffix])
+      }
+    }
+    return orders
+  }
+
+  private compareRouteIdLists(left: RouteId[], right: RouteId[]) {
+    for (let index = 0; index < Math.min(left.length, right.length); index++) {
+      if (left[index] !== right[index]) return left[index]! - right[index]!
+    }
+    return left.length - right.length
+  }
+
+  private findBestMultiRouteRerouteMutation(
+    routeSets: RouteId[][],
+  ): RerouteMutation | undefined {
+    const routeSetCandidates = routeSets
+      .map((routeIds) => ({
+        routeIds,
+        optimisticSummary: this.summarizeStateWithoutRoutes(routeIds),
+      }))
+      .sort(
+        (left, right) =>
+          compareRegionCostSummaries(
+            left.optimisticSummary,
+            right.optimisticSummary,
+          ) || this.compareRouteIdLists(left.routeIds, right.routeIds),
+      )
+
+    const candidateSolver = (this.routeReplacementSolver ??=
+      new SingleRouteReplacementSolver(this, this.REROUTE_MAX_ITERATIONS))
+    let bestMutation: RerouteMutation | undefined
+
+    const selectBetterMutation = (mutation: RerouteMutation) => {
+      if (!bestMutation) {
+        bestMutation = mutation
+        return
+      }
+      const comparison = compareRegionCostSummaries(
+        mutation.summary,
+        bestMutation.summary,
+      )
+      if (
+        comparison < 0 ||
+        (comparison === 0 &&
+          this.compareRouteIdLists(mutation.routeIds, bestMutation.routeIds) <
+            0)
+      ) {
+        bestMutation = mutation
+      }
+    }
+
+    const scoreSolvedCandidate = (
+      routeIds: RouteId[],
+      solveOrder: RouteId[],
+    ) => {
+      this.evaluatedMutationCount += 1
+      if (!candidateSolver.solved || candidateSolver.failed) return
+
+      for (const routeId of solveOrder) {
+        if (
+          candidateSolver.replacementRouteSegmentCountByRouteId[routeId]! >
+          this.initialRouteSegmentCounts[routeId]! +
+            this.MAX_REROUTE_SEGMENT_INCREASE
+        ) {
+          this.rejectedRerouteDetourCount += 1
+          return
+        }
+        if (
+          candidateSolver.replacementRouteLayerChangeCountByRouteId[routeId]! >
+          this.routeLayerChangeCountByRouteId[routeId]!
+        ) {
+          this.rejectedRerouteLayerChangeCount += 1
+          return
+        }
+      }
+
+      candidateSolver.rescoreForOptimizer(this)
+      const scoredState = this.summarizeReplacementSolverState(candidateSolver)
+      const { summary } = scoredState
+      if (!isRoutingRiskNoWorse(summary, this.currentSummary)) {
+        this.rejectedReroutePhysicalRiskCount += 1
+        return
+      }
+      if (!isParetoImprovement(summary, this.currentSummary)) return
+
+      selectBetterMutation({
+        kind: "reroute",
+        routeId: Math.min(...routeIds),
+        routeIds: [...solveOrder],
+        congestionFactor: 0,
+        replacementPath: [],
+        replacementState: candidateSolver.getReplacementState(),
+        replacementRouteMetrics: solveOrder.map((routeId) => ({
+          routeId,
+          layerChangeCount:
+            candidateSolver.replacementRouteLayerChangeCountByRouteId[routeId]!,
+          segmentLength:
+            candidateSolver.replacementRouteSegmentLengthByRouteId[routeId]!,
+        })),
+        routingRiskByRegion: scoredState.routingRiskByRegion,
+        segmentRoutingRiskByRegion: scoredState.segmentRoutingRiskByRegion,
+        segmentLengthByRegion: scoredState.segmentLengthByRegion,
+        summary,
+      })
+    }
+
+    for (
+      let candidateIndex = 0;
+      candidateIndex < routeSetCandidates.length;
+      candidateIndex++
+    ) {
+      const { routeIds, optimisticSummary } =
+        routeSetCandidates[candidateIndex]!
+      const solveOrders = this.getRouteSolveOrders(routeIds)
+      if (
+        compareRegionCostSummaries(
+          optimisticSummary,
+          bestMutation?.summary ?? this.currentSummary,
+        ) >= 0
+      ) {
+        this.prunedRerouteSearchCount +=
+          (routeSetCandidates.length - candidateIndex) * solveOrders.length
+        break
+      }
+      for (const solveOrder of solveOrders) {
+        candidateSolver.resetForRoutes(this, solveOrder, 0)
+        candidateSolver.solve()
+        this.rerouteSearchCount += 1
+        this.rerouteSearchIterationCount += candidateSolver.iterations
+        scoreSolvedCandidate(routeIds, solveOrder)
+      }
+    }
+    return bestMutation
+  }
+
+  private computeSegmentLength(
+    solver: TinyHyperGraphSolver,
+    fromPortId: PortId,
+    toPortId: PortId,
+  ): number {
+    return Math.hypot(
+      solver.topology.portX[toPortId]! - solver.topology.portX[fromPortId]!,
+      solver.topology.portY[toPortId]! - solver.topology.portY[fromPortId]!,
+    )
+  }
+
+  private recomputeRouteMetrics(routeIds: readonly RouteId[]) {
+    const routeIdSet = new Set(routeIds)
+    for (const routeId of routeIdSet) {
+      this.routeLayerChangeCountByRouteId[routeId] = 0
+      this.routeSegmentLengthByRouteId[routeId] = 0
+    }
+    for (const segments of this.state.regionSegments) {
+      for (const [routeId, fromPortId, toPortId] of segments) {
+        if (!routeIdSet.has(routeId)) continue
+        if (this.topology.portZ[fromPortId] !== this.topology.portZ[toPortId]) {
+          this.routeLayerChangeCountByRouteId[routeId] += 1
+        }
+        this.routeSegmentLengthByRouteId[routeId] += this.computeSegmentLength(
+          this,
+          fromPortId,
+          toPortId,
+        )
+      }
+    }
+  }
+
+  private computeRegionMetricsWithoutRoutes(
     regionId: RegionId,
-    removedRouteId: RouteId,
+    removedRouteIds: ReadonlySet<RouteId>,
   ) {
     const intersectionOwnerIds: number[] = []
     const lesserAngles: number[] = []
@@ -1484,7 +2218,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     for (const [routeId, fromPortId, toPortId] of this.state.regionSegments[
       regionId
     ]!) {
-      if (routeId === removedRouteId) continue
+      if (removedRouteIds.has(routeId)) continue
       remainingSegmentCount += 1
       const intersectionOwnerId = this.getIntersectionOwnerId(routeId)
       if (
@@ -1551,6 +2285,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       }
     }
 
+    const physicalRisks = this.computePhysicalRoutingRisksForRegion(
+      this,
+      regionId,
+      { removedRouteIds },
+    )
     return {
       regionCost: this.computeRegionCostForRegion(
         regionId,
@@ -1559,23 +2298,33 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         entryExitLayerChanges,
         intersectionOwnerIds.length,
       ),
-      routingRisk: this.computeExactRoutingRiskForRegion(this, regionId, {
-        removedRouteId,
-      }),
+      routingRisk: physicalRisks.groupedRisk,
+      segmentRoutingRisk: physicalRisks.segmentRisk,
       segmentCount: remainingSegmentCount,
     }
   }
 
   private summarizeSolverState(
     solver: TinyHyperGraphSolver,
-  ): UnravelRegionCostSummary {
+  ): ScoredSolverState {
     let maxRegionCost = 0
     let totalRegionCost = 0
     let maxRoutingRisk = 0
     let squaredRoutingRisk = 0
     let totalRoutingRisk = 0
+    let maxSegmentRoutingRisk = 0
     let maxRegionSegmentCount = 0
     let squaredRegionSegmentCount = 0
+    let totalSegmentLength = 0
+    const routingRiskByRegion = new Float64Array(
+      solver.state.regionIntersectionCaches.length,
+    )
+    const segmentRoutingRiskByRegion = new Float64Array(
+      solver.state.regionIntersectionCaches.length,
+    )
+    const segmentLengthByRegion = new Float64Array(
+      solver.state.regionIntersectionCaches.length,
+    )
     for (
       let regionId = 0;
       regionId < solver.state.regionIntersectionCaches.length;
@@ -1591,45 +2340,162 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         )
         squaredRegionSegmentCount += cache.existingSegmentCount ** 2
       }
-      const routingRisk = this.computeExactRoutingRiskForRegion(
-        solver,
-        regionId,
-      )
+      for (const [, fromPortId, toPortId] of solver.state.regionSegments[
+        regionId
+      ]!) {
+        const segmentLength = this.computeSegmentLength(
+          solver,
+          fromPortId,
+          toPortId,
+        )
+        segmentLengthByRegion[regionId] += segmentLength
+        totalSegmentLength += segmentLength
+      }
+      const { groupedRisk: routingRisk, segmentRisk } =
+        this.computePhysicalRoutingRisksForRegion(solver, regionId)
+      routingRiskByRegion[regionId] = routingRisk
+      segmentRoutingRiskByRegion[regionId] = segmentRisk
       maxRoutingRisk = Math.max(maxRoutingRisk, routingRisk)
       squaredRoutingRisk += routingRisk * routingRisk
       totalRoutingRisk += routingRisk
+      maxSegmentRoutingRisk = Math.max(maxSegmentRoutingRisk, segmentRisk)
     }
     return {
-      maxRegionCost,
-      totalRegionCost,
-      maxRegionSegmentCount,
-      squaredRegionSegmentCount,
-      maxRoutingRisk,
-      squaredRoutingRisk,
-      totalRoutingRisk,
+      summary: {
+        maxRegionCost,
+        totalRegionCost,
+        maxRegionSegmentCount,
+        squaredRegionSegmentCount,
+        totalSegmentLength,
+        maxRoutingRisk,
+        squaredRoutingRisk,
+        totalRoutingRisk,
+        maxSegmentRoutingRisk,
+      },
+      routingRiskByRegion,
+      segmentRoutingRiskByRegion,
+      segmentLengthByRegion,
+    }
+  }
+
+  /**
+   * Scores a copy-on-write replacement state. Regions outside the removed and
+   * replacement corridors are byte-for-byte identical to the current state,
+   * so reuse their already validated geometry metrics and recompute only the
+   * dirty frontier. The final objective is still aggregated across every
+   * region, preserving exact max and total comparisons.
+   */
+  private summarizeReplacementSolverState(
+    solver: SingleRouteReplacementSolver,
+  ): ScoredSolverState {
+    const routingRiskByRegion = new Float64Array(this.routingRiskByRegion)
+    const segmentRoutingRiskByRegion = new Float64Array(
+      this.segmentRoutingRiskByRegion,
+    )
+    const segmentLengthByRegion = new Float64Array(this.segmentLengthByRegion)
+
+    for (const regionId of solver.getChangedRegionIds()) {
+      let segmentLength = 0
+      for (const [, fromPortId, toPortId] of solver.state.regionSegments[
+        regionId
+      ]!) {
+        segmentLength += this.computeSegmentLength(solver, fromPortId, toPortId)
+      }
+      segmentLengthByRegion[regionId] = segmentLength
+      const { groupedRisk, segmentRisk } =
+        this.computePhysicalRoutingRisksForRegion(solver, regionId)
+      routingRiskByRegion[regionId] = groupedRisk
+      segmentRoutingRiskByRegion[regionId] = segmentRisk
+    }
+
+    let maxRegionCost = 0
+    let totalRegionCost = 0
+    let maxRoutingRisk = 0
+    let squaredRoutingRisk = 0
+    let totalRoutingRisk = 0
+    let maxSegmentRoutingRisk = 0
+    let maxRegionSegmentCount = 0
+    let squaredRegionSegmentCount = 0
+    let totalSegmentLength = 0
+    for (
+      let regionId = 0;
+      regionId < solver.state.regionIntersectionCaches.length;
+      regionId++
+    ) {
+      const cache = solver.state.regionIntersectionCaches[regionId]!
+      const routingRisk = routingRiskByRegion[regionId]!
+      maxRegionCost = Math.max(maxRegionCost, cache.existingRegionCost)
+      totalRegionCost += cache.existingRegionCost
+      if (this.REGION_COST_MODEL === "routing-complexity") {
+        maxRegionSegmentCount = Math.max(
+          maxRegionSegmentCount,
+          cache.existingSegmentCount,
+        )
+        squaredRegionSegmentCount += cache.existingSegmentCount ** 2
+      }
+      totalSegmentLength += segmentLengthByRegion[regionId]!
+      maxRoutingRisk = Math.max(maxRoutingRisk, routingRisk)
+      squaredRoutingRisk += routingRisk * routingRisk
+      totalRoutingRisk += routingRisk
+      maxSegmentRoutingRisk = Math.max(
+        maxSegmentRoutingRisk,
+        segmentRoutingRiskByRegion[regionId]!,
+      )
+    }
+
+    return {
+      summary: {
+        maxRegionCost,
+        totalRegionCost,
+        maxRegionSegmentCount,
+        squaredRegionSegmentCount,
+        totalSegmentLength,
+        maxRoutingRisk,
+        squaredRoutingRisk,
+        totalRoutingRisk,
+        maxSegmentRoutingRisk,
+      },
+      routingRiskByRegion,
+      segmentRoutingRiskByRegion,
+      segmentLengthByRegion,
     }
   }
 
   private summarizeStateWithoutRoute(
     routeId: RouteId,
   ): UnravelRegionCostSummary {
+    return this.summarizeStateWithoutRoutes([routeId])
+  }
+
+  private summarizeStateWithoutRoutes(
+    routeIds: RouteId[],
+  ): UnravelRegionCostSummary {
+    const removedRouteIds = new Set(routeIds)
     let maxRegionCost = 0
     let totalRegionCost = 0
     let maxRoutingRisk = 0
     let squaredRoutingRisk = 0
     let totalRoutingRisk = 0
+    let maxSegmentRoutingRisk = 0
     let maxRegionSegmentCount = 0
     let squaredRegionSegmentCount = 0
+    const totalSegmentLength =
+      this.currentSummary.totalSegmentLength -
+      routeIds.reduce(
+        (total, routeId) => total + this.routeSegmentLengthByRouteId[routeId]!,
+        0,
+      )
 
     for (let regionId = 0; regionId < this.topology.regionCount; regionId++) {
       const cache = this.state.regionIntersectionCaches[regionId]!
       const regionMetrics = this.state.regionSegments[regionId]!.some(
-        ([segmentRouteId]) => segmentRouteId === routeId,
+        ([segmentRouteId]) => removedRouteIds.has(segmentRouteId),
       )
-        ? this.computeRegionMetricsWithoutRoute(regionId, routeId)
+        ? this.computeRegionMetricsWithoutRoutes(regionId, removedRouteIds)
         : {
             regionCost: cache.existingRegionCost,
-            routingRisk: this.computeExactRoutingRiskForRegion(this, regionId),
+            routingRisk: this.routingRiskByRegion[regionId]!,
+            segmentRoutingRisk: this.segmentRoutingRiskByRegion[regionId]!,
             segmentCount: cache.existingSegmentCount,
           }
       maxRegionCost = Math.max(maxRegionCost, regionMetrics.regionCost)
@@ -1637,6 +2503,10 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       maxRoutingRisk = Math.max(maxRoutingRisk, regionMetrics.routingRisk)
       squaredRoutingRisk += regionMetrics.routingRisk ** 2
       totalRoutingRisk += regionMetrics.routingRisk
+      maxSegmentRoutingRisk = Math.max(
+        maxSegmentRoutingRisk,
+        regionMetrics.segmentRoutingRisk,
+      )
       if (this.REGION_COST_MODEL === "routing-complexity") {
         maxRegionSegmentCount = Math.max(
           maxRegionSegmentCount,
@@ -1651,16 +2521,17 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       totalRegionCost,
       maxRegionSegmentCount,
       squaredRegionSegmentCount,
+      totalSegmentLength,
       maxRoutingRisk,
       squaredRoutingRisk,
       totalRoutingRisk,
+      maxSegmentRoutingRisk,
     }
   }
 
-  private computeRegionMetricsAfterSwap(
+  private computePrimaryRegionMetricsAfterPermutation(
     regionId: RegionId,
-    left: BoundaryPortSlot,
-    right: BoundaryPortSlot,
+    permutation: BoundaryPermutation,
   ) {
     const intersectionOwnerIds: number[] = []
     const lesserAngles: number[] = []
@@ -1668,18 +2539,22 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     const layerMasks: number[] = []
     const seenIntersectionOwnerIds = new Set<number>()
     let entryExitLayerChanges = 0
+    let segmentLength = 0
 
     for (const [routeId, originalFromPortId, originalToPortId] of this.state
       .regionSegments[regionId]!) {
-      let fromPortId = originalFromPortId
-      let toPortId = originalToPortId
-      if (left.routeId !== undefined && routeId === left.routeId) {
-        if (fromPortId === left.portId) fromPortId = right.portId
-        if (toPortId === left.portId) toPortId = right.portId
-      } else if (right.routeId !== undefined && routeId === right.routeId) {
-        if (fromPortId === right.portId) fromPortId = left.portId
-        if (toPortId === right.portId) toPortId = left.portId
-      }
+      const fromPortId = this.remapPortForBoundaryPermutation(
+        routeId,
+        originalFromPortId,
+        permutation,
+      )
+      const toPortId = this.remapPortForBoundaryPermutation(
+        routeId,
+        originalToPortId,
+        permutation,
+      )
+
+      segmentLength += this.computeSegmentLength(this, fromPortId, toPortId)
 
       const geometry = this.populateSegmentGeometryScratch(
         regionId,
@@ -1754,71 +2629,70 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         entryExitLayerChanges,
         intersectionOwnerIds.length,
       ),
-      routingRisk: this.computeExactRoutingRiskForRegion(this, regionId, {
-        swap: { left, right },
-      }),
+      segmentLength,
     }
   }
 
-  private applySwapMutation(mutation: SwapMutation) {
-    // Cached replacement paths were expressed in the pre-swap boundary-port
-    // coordinates. Carry the affected route's paths through the same exact port
-    // permutation so they remain candidates after the untwist descent. Every
-    // transformed path is still ownership-validated and rescored before use.
+  private applyBoundaryMutation(mutation: BoundaryMutation) {
+    // Cached replacement paths were expressed in the old boundary-port
+    // coordinates. Carry them through the same atomic permutation so they
+    // remain candidates after the untwist descent. Every transformed path is
+    // still ownership-validated and fully rescored before use.
     for (const cachedPath of this.pendingReroutePaths) {
-      let fromPortId: PortId | undefined
-      let toPortId: PortId | undefined
-      if (cachedPath.routeId === mutation.route1Id) {
-        fromPortId = mutation.port1Id
-        toPortId = mutation.port2Id
-      } else if (cachedPath.routeId === mutation.route2Id) {
-        fromPortId = mutation.port2Id
-        toPortId = mutation.port1Id
-      }
-      if (fromPortId === undefined || toPortId === undefined) continue
-
       for (const segment of cachedPath.replacementPath) {
-        if (segment.fromPortId === fromPortId) segment.fromPortId = toPortId
-        if (segment.toPortId === fromPortId) segment.toPortId = toPortId
+        segment.fromPortId = this.remapPortForBoundaryPermutation(
+          cachedPath.routeId,
+          segment.fromPortId,
+          mutation.permutation,
+        )
+        segment.toPortId = this.remapPortForBoundaryPermutation(
+          cachedPath.routeId,
+          segment.toPortId,
+          mutation.permutation,
+        )
       }
     }
 
     for (const regionId of [mutation.region1Id, mutation.region2Id]) {
       for (const segment of this.state.regionSegments[regionId]!) {
-        if (
-          mutation.route1Id !== undefined &&
-          segment[0] === mutation.route1Id
-        ) {
-          if (segment[1] === mutation.port1Id) {
-            segment[1] = mutation.port2Id
-          }
-          if (segment[2] === mutation.port1Id) {
-            segment[2] = mutation.port2Id
-          }
-        } else if (
-          mutation.route2Id !== undefined &&
-          segment[0] === mutation.route2Id
-        ) {
-          if (segment[1] === mutation.port2Id) {
-            segment[1] = mutation.port1Id
-          }
-          if (segment[2] === mutation.port2Id) {
-            segment[2] = mutation.port1Id
-          }
-        }
+        segment[1] = this.remapPortForBoundaryPermutation(
+          segment[0],
+          segment[1],
+          mutation.permutation,
+        )
+        segment[2] = this.remapPortForBoundaryPermutation(
+          segment[0],
+          segment[2],
+          mutation.permutation,
+        )
       }
     }
 
-    this.state.portAssignment[mutation.port1Id] =
-      mutation.route2Id === undefined
-        ? -1
-        : this.problem.routeNet[mutation.route2Id]!
-    this.state.portAssignment[mutation.port2Id] =
-      mutation.route1Id === undefined
-        ? -1
-        : this.problem.routeNet[mutation.route1Id]!
+    for (let index = 0; index < mutation.permutation.slots.length; index++) {
+      const source = mutation.permutation.slots[index]!
+      const destinationPortId = mutation.permutation.destinationPortIds[index]!
+      this.state.portAssignment[destinationPortId] =
+        source.routeId === undefined
+          ? -1
+          : this.problem.routeNet[source.routeId]!
+    }
     this.rebuildRegionCache(mutation.region1Id)
     this.rebuildRegionCache(mutation.region2Id)
+    this.routingRiskByRegion[mutation.region1Id] = mutation.region1RoutingRisk
+    this.routingRiskByRegion[mutation.region2Id] = mutation.region2RoutingRisk
+    this.segmentRoutingRiskByRegion[mutation.region1Id] =
+      mutation.region1SegmentRoutingRisk
+    this.segmentRoutingRiskByRegion[mutation.region2Id] =
+      mutation.region2SegmentRoutingRisk
+    this.segmentLengthByRegion[mutation.region1Id] =
+      mutation.region1SegmentLength
+    this.segmentLengthByRegion[mutation.region2Id] =
+      mutation.region2SegmentLength
+    this.recomputeRouteMetrics(
+      mutation.permutation.slots.flatMap(({ routeId }) =>
+        routeId === undefined ? [] : [routeId],
+      ),
+    )
   }
 
   private applyRerouteMutation(mutation: RerouteMutation) {
@@ -1833,6 +2707,17 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     this.state.candidateQueue.clear()
     this.resetCandidateBestCosts()
     this.state.goalPortId = -1
+    this.routingRiskByRegion.set(mutation.routingRiskByRegion)
+    this.segmentRoutingRiskByRegion.set(mutation.segmentRoutingRiskByRegion)
+    this.segmentLengthByRegion.set(mutation.segmentLengthByRegion)
+    for (const {
+      routeId,
+      layerChangeCount,
+      segmentLength,
+    } of mutation.replacementRouteMetrics) {
+      this.routeLayerChangeCountByRouteId[routeId] = layerChangeCount
+      this.routeSegmentLengthByRouteId[routeId] = segmentLength
+    }
   }
 
   private getIntersectionOwnerId(routeId: RouteId): number {
@@ -1861,22 +2746,45 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   private finishOptimization(
     reason: "local_optimum" | "mutation_limit" | "reroute_limit",
   ) {
+    const finalPeakRegionIds = this.state.regionIntersectionCaches
+      .map((cache, regionId) => ({
+        regionId,
+        cost: cache.existingRegionCost,
+      }))
+      .filter(
+        ({ cost }) =>
+          Math.abs(cost - this.currentSummary.maxRegionCost) <= COST_EPSILON,
+      )
+      .map(({ regionId }) => regionId)
+    const finalPeakRouteIds = [
+      ...new Set(
+        finalPeakRegionIds.flatMap((regionId) =>
+          this.state.regionSegments[regionId]!.map(([routeId]) => routeId),
+        ),
+      ),
+    ].sort((left, right) => left - right)
     this.stats = {
       ...this.stats,
       finalMaxRegionCost: this.currentSummary.maxRegionCost,
       finalTotalRegionCost: this.currentSummary.totalRegionCost,
+      finalTotalSegmentLength: this.currentSummary.totalSegmentLength,
       acceptedMutationCount: this.acceptedMutationCount,
       acceptedSwapMutationCount: this.acceptedSwapMutationCount,
+      acceptedCycleMutationCount: this.acceptedCycleMutationCount,
       acceptedRerouteMutationCount: this.acceptedRerouteMutationCount,
+      acceptedPairRerouteMutationCount: this.acceptedPairRerouteMutationCount,
       evaluatedMutationCount: this.evaluatedMutationCount,
       rejectedRerouteDetourCount: this.rejectedRerouteDetourCount,
       rejectedRerouteLayerChangeCount: this.rejectedRerouteLayerChangeCount,
+      rejectedReroutePhysicalRiskCount: this.rejectedReroutePhysicalRiskCount,
       rejectedCrossLayerSwapCount: this.rejectedCrossLayerSwapCount,
       prunedRerouteSearchCount: this.prunedRerouteSearchCount,
       rerouteSearchIterationCount: this.rerouteSearchIterationCount,
       rerouteSearchCount: this.rerouteSearchCount,
       reusedRerouteCandidateCount: this.reusedRerouteCandidateCount,
       optimizationStopReason: reason,
+      finalPeakRegionIds,
+      finalPeakRouteIds,
       optimized:
         compareRegionCostSummaries(this.currentSummary, this.initialSummary) <
         0,
