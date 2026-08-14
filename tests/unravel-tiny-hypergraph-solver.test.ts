@@ -6,6 +6,7 @@ import {
   UnravelTinyHyperGraphSolver,
 } from "lib/index"
 import { loadSerializedHyperGraph } from "lib/compat/loadSerializedHyperGraph"
+import { computeRoutingRiskRegionCost } from "lib/computeRegionCost"
 import { TinyHyperGraphSectionSolver } from "lib/section-solver"
 import type { PortId, RegionId, RouteId } from "lib/types"
 
@@ -34,7 +35,9 @@ const createCrossedSolvedSolver = (portZ = new Int32Array(6)) => {
     portAngleForRegion1: new Int32Array([0, 9000, 18000, 27000, 18000, 27000]),
     portAngleForRegion2: new Int32Array([0, 9000, 0, 9000, 0, 9000]),
     portX: new Float64Array([-1, -1, 0.5, 0.5, 2, 2]),
-    portY: new Float64Array([1, -1, 1, -1, 1, -1]),
+    // The two routes cross geometrically at the shared boundary: exchanging
+    // ports 2 and 3 both removes the angular crossing and shortens the paths.
+    portY: new Float64Array([1, -1, -1, 1, 1, -1]),
     portZ,
   }
   const problem: TinyHyperGraphProblem = {
@@ -166,6 +169,165 @@ const createSolvedSolverWithAlternatePath = () => {
   return solver
 }
 
+const createSolvedSolverWithIndependentAlternatePaths = () => {
+  const source = createSolvedSolverWithAlternatePath()
+  const portCount = source.topology.portCount * 2
+  const regionCount = source.topology.regionCount * 2
+  const routeCount = source.problem.routeCount * 2
+  const topology: TinyHyperGraphTopology = {
+    portCount,
+    regionCount,
+    regionIncidentPorts: [0, 1].flatMap((copyIndex) =>
+      source.topology.regionIncidentPorts.map((portIds) =>
+        portIds.map((portId) => portId + copyIndex * source.topology.portCount),
+      ),
+    ),
+    incidentPortRegion: [0, 1].flatMap((copyIndex) =>
+      source.topology.incidentPortRegion.map((regionIds) =>
+        regionIds.map(
+          (regionId) => regionId + copyIndex * source.topology.regionCount,
+        ),
+      ),
+    ),
+    regionWidth: new Float64Array([
+      ...source.topology.regionWidth,
+      ...source.topology.regionWidth,
+    ]),
+    regionHeight: new Float64Array([
+      ...source.topology.regionHeight,
+      ...source.topology.regionHeight,
+    ]),
+    regionCenterX: new Float64Array([
+      ...source.topology.regionCenterX,
+      ...Array.from(source.topology.regionCenterX, (x) => x + 100),
+    ]),
+    regionCenterY: new Float64Array([
+      ...source.topology.regionCenterY,
+      ...source.topology.regionCenterY,
+    ]),
+    portAngleForRegion1: new Int32Array([
+      ...source.topology.portAngleForRegion1,
+      ...source.topology.portAngleForRegion1,
+    ]),
+    portAngleForRegion2: new Int32Array([
+      ...source.topology.portAngleForRegion2!,
+      ...source.topology.portAngleForRegion2!,
+    ]),
+    portX: new Float64Array([
+      ...source.topology.portX,
+      ...Array.from(source.topology.portX, (x) => x + 100),
+    ]),
+    portY: new Float64Array([
+      ...source.topology.portY,
+      ...source.topology.portY,
+    ]),
+    portZ: new Int32Array([...source.topology.portZ, ...source.topology.portZ]),
+  }
+  const problem: TinyHyperGraphProblem = {
+    routeCount,
+    portSectionMask: new Int8Array(portCount).fill(1),
+    routeStartPort: new Int32Array([
+      ...source.problem.routeStartPort,
+      ...Array.from(
+        source.problem.routeStartPort,
+        (portId) => portId + source.topology.portCount,
+      ),
+    ]),
+    routeEndPort: new Int32Array([
+      ...source.problem.routeEndPort,
+      ...Array.from(
+        source.problem.routeEndPort,
+        (portId) => portId + source.topology.portCount,
+      ),
+    ]),
+    routeNet: new Int32Array(Array.from({ length: routeCount }, (_, id) => id)),
+    regionNetId: new Int32Array(regionCount).fill(-1),
+  }
+  const solver = new TinyHyperGraphSolver(topology, problem)
+  for (let copyIndex = 0; copyIndex < 2; copyIndex++) {
+    for (
+      let sourceRegionId = 0;
+      sourceRegionId < source.topology.regionCount;
+      sourceRegionId++
+    ) {
+      for (const [sourceRouteId, sourceFromPortId, sourceToPortId] of source
+        .state.regionSegments[sourceRegionId]!) {
+        const routeId = sourceRouteId + copyIndex * source.problem.routeCount
+        const regionId =
+          sourceRegionId + copyIndex * source.topology.regionCount
+        const fromPortId =
+          sourceFromPortId + copyIndex * source.topology.portCount
+        const toPortId = sourceToPortId + copyIndex * source.topology.portCount
+        const routeNetId = problem.routeNet[routeId]!
+        solver.state.currentRouteId = routeId
+        solver.state.currentRouteNetId = routeNetId
+        solver.state.regionSegments[regionId]!.push([
+          routeId,
+          fromPortId,
+          toPortId,
+        ])
+        solver.state.portAssignment[fromPortId] = routeNetId
+        solver.state.portAssignment[toPortId] = routeNetId
+        solver.appendSegmentToRegionCache(regionId, fromPortId, toPortId)
+      }
+    }
+  }
+  solver.state.currentRouteId = undefined
+  solver.state.currentRouteNetId = undefined
+  solver.solved = true
+  return solver
+}
+
+const createSolvedSolverWithSharedDownstreamConnection = () => {
+  const topology: TinyHyperGraphTopology = {
+    portCount: 6,
+    regionCount: 1,
+    regionIncidentPorts: [[0, 1, 2, 3, 4, 5]],
+    incidentPortRegion: Array.from({ length: 6 }, () => [0]),
+    regionWidth: new Float64Array([10]),
+    regionHeight: new Float64Array([10]),
+    regionCenterX: new Float64Array([0]),
+    regionCenterY: new Float64Array([0]),
+    portAngleForRegion1: new Int32Array([0, 18000, 9000, 27000, 4500, 22500]),
+    portAngleForRegion2: new Int32Array(6),
+    portX: new Float64Array([1, -1, 0, 0, 1, -1]),
+    portY: new Float64Array([0, 0, 1, -1, 1, -1]),
+    portZ: new Int32Array(6),
+    regionAvailableZMask: new Int32Array([3]),
+  }
+  const problem: TinyHyperGraphProblem = {
+    routeCount: 3,
+    routeMetadata: [
+      { simpleRouteConnection: { name: "connection-a" } },
+      { simpleRouteConnection: { name: "connection-a" } },
+      { simpleRouteConnection: { name: "connection-b" } },
+    ],
+    portSectionMask: new Int8Array(6).fill(1),
+    routeStartPort: new Int32Array([0, 2, 4]),
+    routeEndPort: new Int32Array([1, 3, 5]),
+    routeNet: new Int32Array([0, 1, 2]),
+    regionNetId: new Int32Array([-1]),
+  }
+  const solver = new TinyHyperGraphSolver(topology, problem)
+  for (const [routeId, fromPortId, toPortId] of [
+    [0, 0, 1],
+    [1, 2, 3],
+    [2, 4, 5],
+  ] as Array<[RouteId, PortId, PortId]>) {
+    const routeNetId = problem.routeNet[routeId]!
+    solver.state.currentRouteId = routeId
+    solver.state.currentRouteNetId = routeNetId
+    solver.state.regionSegments[0]!.push([routeId, fromPortId, toPortId])
+    solver.state.portAssignment[fromPortId] = routeNetId
+    solver.state.portAssignment[toPortId] = routeNetId
+    solver.appendSegmentToRegionCache(0, fromPortId, toPortId)
+  }
+  solver.state.currentRouteId = undefined
+  solver.state.currentRouteNetId = undefined
+  solver.solved = true
+  return solver
+}
+
 test("unravel solver accepts only beneficial boundary mutations", () => {
   const inputSolver = createCrossedSolvedSolver()
   const initialMaxRegionCost = getMaxRegionCost(inputSolver)
@@ -192,7 +354,7 @@ test("unravel solver accepts only beneficial boundary mutations", () => {
   )
 })
 
-test("routing-complexity swaps preserve boundary layers", () => {
+test("routing-complexity swaps preserve each route's layer-change count", () => {
   const inputSolver = createCrossedSolvedSolver(
     new Int32Array([0, 0, 0, 1, 0, 0]),
   )
@@ -209,7 +371,26 @@ test("routing-complexity swaps preserve boundary layers", () => {
   expect(solver.state.regionSegments).toEqual(inputSolver.state.regionSegments)
 })
 
-test("routing-complexity includes physical trace density by default", () => {
+test("routing-complexity swaps may relocate existing layer changes", () => {
+  const inputSolver = createCrossedSolvedSolver(
+    new Int32Array([0, 0, 0, 1, 1, 1]),
+  )
+  const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
+    REGION_COST_MODEL: "routing-complexity",
+    MAX_HOT_REGIONS: 0,
+  })
+
+  solver.solve()
+
+  expect(solver.solved).toBe(true)
+  expect(solver.stats.acceptedMutationCount).toBe(1)
+  expect(solver.stats.rejectedCrossLayerSwapCount).toBe(0)
+  expect(solver.state.regionSegments).not.toEqual(
+    inputSolver.state.regionSegments,
+  )
+})
+
+test("routing-complexity inherits the configured trace-density floor", () => {
   const inputSolver = createCrossedSolvedSolver()
   const defaultDensitySolver = new UnravelTinyHyperGraphSolver(inputSolver, {
     REGION_COST_MODEL: "routing-complexity",
@@ -224,11 +405,8 @@ test("routing-complexity includes physical trace density by default", () => {
     },
   )
 
-  expect(defaultDensitySolver.TRACE_DENSITY_COST_FACTOR).toBe(1)
+  expect(defaultDensitySolver.TRACE_DENSITY_COST_FACTOR).toBe(0)
   expect(explicitZeroDensitySolver.TRACE_DENSITY_COST_FACTOR).toBe(0)
-  expect(defaultDensitySolver.initialSummary.totalRegionCost).toBeGreaterThan(
-    explicitZeroDensitySolver.initialSummary.totalRegionCost,
-  )
 })
 
 test("unravel solver preserves the input at a zero mutation limit", () => {
@@ -271,6 +449,39 @@ test("unravel solver replaces a route through the hottest region", () => {
     solution,
   ).baselineSolver
   expect(getMaxRegionCost(replaySolver)).toBe(getMaxRegionCost(solver))
+})
+
+test("unravel solver reuses valid paths before repeating graph-wide A*", () => {
+  const inputSolver = createSolvedSolverWithIndependentAlternatePaths()
+  const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
+    REROUTE_CONGESTION_FACTORS: [0, 1],
+    MAX_REROUTE_SEGMENT_INCREASE: 10,
+  })
+
+  solver.solve()
+
+  expect(getMaxRegionCost(solver)).toBe(0)
+  expect(solver.stats.acceptedRerouteMutationCount).toBeGreaterThanOrEqual(2)
+  expect(solver.stats.reusedRerouteCandidateCount).toBeGreaterThan(0)
+  expect(solver.stats.optimizationStopReason).toBe("local_optimum")
+})
+
+test("routing risk groups split routes by downstream connection name", () => {
+  const inputSolver = createSolvedSolverWithSharedDownstreamConnection()
+  const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
+    REGION_COST_MODEL: "routing-complexity",
+    MAX_MUTATIONS: 0,
+  })
+  const oneCrossingRisk = computeRoutingRiskRegionCost(10, 10, 1, 0, 0, 3)
+
+  expect(solver.initialSummary.totalRoutingRisk).toBeCloseTo(
+    oneCrossingRisk,
+    12,
+  )
+  expect(solver.initialSummary.totalRoutingRisk).not.toBeCloseTo(
+    oneCrossingRisk * 2,
+    12,
+  )
 })
 
 test("unravel solver rejects a cost-improving route detour at a zero ceiling", () => {

@@ -125,11 +125,12 @@ export const computeRegionCostForArea = (
       (traceCount / layerCount) ** 2 *
       traceWidth ** 2) /
     area
+  const intersectionCost =
+    (estViasRequired * viaSizeWithMarginSq * traceCountMult) / area
 
   return (
-    (estViasRequired * viaSizeWithMarginSq * traceCountMult) / area +
-    impossibleSingleLayerIntersectionCost +
-    traceDensityCost
+    Math.max(intersectionCost, traceDensityCost) +
+    impossibleSingleLayerIntersectionCost
   )
 }
 

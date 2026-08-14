@@ -30,15 +30,20 @@ const solvedGraph = solver.getOutput()
 ### Optimize region costs after solving
 
 `UnravelTinyHyperGraphSolver` accepts a completed solver and monotonically
-improves the lexicographic `(maximum region cost, total region cost)` objective.
-It first considers boundary-port swaps (including swaps with unused capacity),
-then replaces individual routes that cross the hottest region under several
-congestion weights. A mutation is committed only when it improves the complete
-solved graph. Replacement searches use an admissible route-removal lower bound
-to prioritize promising routes and accept the first improving route in that
-order. Routes that add more than four region segments over their input path are
-rejected, preventing a local congestion win from creating an unbounded global
-detour. The original solution remains a safe fallback.
+reduces its maximum region cost. On a maximum-cost plateau, a mutation must be a
+Pareto improvement across total region cost, segment concentration, and the
+downstream detailed-router crossing-risk metrics. It alternates complete
+boundary-port untwist descents with graph-wide single-route replacements until
+neither neighborhood can improve the solved graph.
+
+Each route replacement uses the core A* marginal region-cost objective once.
+An admissible route-removal lower bound orders and prunes the graph-wide search.
+Valid paths found during a sweep are carried through later boundary swaps,
+ownership-validated, and fully rescored before reuse; a final fresh A* sweep is
+still required before reporting a local optimum. The default optimization is
+not route-, sample-, or mutation-count gated. Resource caps and a per-route
+detour ceiling remain explicit opt-in options, and the original solution remains
+a safe fallback.
 
 ```ts
 import {
@@ -61,12 +66,13 @@ const optimizedGraph = optimizer.getOutput()
 
 The section pipeline runs this as its final `optimizeRegionCosts` stage. Useful
 statistics include `initialMaxRegionCost`, `finalMaxRegionCost`,
-`acceptedMutationCount`, `evaluatedMutationCount`, and
-`rejectedRerouteDetourCount`, `rerouteSearchCount`, and
-`rerouteSearchIterationCount`. Set `MAX_REROUTE_SEGMENT_INCREASE` to tune the
-per-route detour ceiling, or `MAX_MUTATIONS: 0` to retain the solved input
-without running post-solve mutations. Integrations whose downstream router
-uses tuned capacity-node failure estimates can set
+`acceptedSwapMutationCount`, `acceptedRerouteMutationCount`,
+`evaluatedMutationCount`, `rerouteSearchCount`,
+`rerouteSearchIterationCount`, and `reusedRerouteCandidateCount`. Set
+`MAX_REROUTE_SEGMENT_INCREASE` to opt into a per-route detour ceiling, or
+`MAX_MUTATIONS: 0` to retain the solved input without running post-solve
+mutations. Integrations whose downstream router uses tuned capacity-node
+failure estimates can set
 `REGION_COST_MODEL: "routing-risk"`; that model distinguishes same-layer and
 transition-pair crossings and ignores crossings between independent fixed
 layers.
@@ -77,11 +83,15 @@ owner per electrical net, scores every segment (including region re-entry),
 treats a crossing between a layer transition and a fixed-layer chord as
 blocking via-placement work, and ignores fixed chords on disjoint layers. It
 uses the area- and segment-density-aware cost so crowded interactions rank
-ahead of topologically similar sparse ones. Its default density coefficient
-charges the physical trace footprint even in regions without chord crossings,
-and boundary swaps stay on the same copper layer so a local untwist cannot
-silently move a long trace onto a pad's layer. Pass
-`TRACE_DENSITY_COST_FACTOR: 0` explicitly to disable the density term.
+ahead of topologically similar sparse ones. If `TRACE_DENSITY_COST_FACTOR` is
+enabled, physical trace footprint is used as a cost floor without
+double-counting density already represented by intersection load. Cross-layer
+boundary swaps preserve each affected route's transition count, so they can
+relocate a via locally without silently changing a long-range layer assignment.
+The optimizer's secondary risk objective mirrors the detailed router more
+exactly: it groups split tiny routes by `simpleRouteConnection.name`, uses the
+first two distinct physical points as that connection's region chord, and
+excludes shared endpoints.
 
 Existing routing can be preloaded through the standard region assignments:
 

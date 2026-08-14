@@ -13,3 +13,10 @@ test("trace-density cost penalizes concentrated parallel routes", () => {
   expect(denseCost).toBeGreaterThan(sparseCost)
   expect(singleLayerDenseCost).toBeGreaterThan(twoLayerDenseCost)
 })
+
+test("trace density is a floor instead of double-counting intersection load", () => {
+  const intersectionOnly = computeRegionCost(2, 2, 1, 0, 0, 8)
+  const belowIntersectionFloor = computeRegionCost(2, 2, 1, 0, 0, 8, 0, 0.3, 1)
+
+  expect(belowIntersectionFloor).toBe(intersectionOnly)
+})
