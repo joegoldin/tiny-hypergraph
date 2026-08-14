@@ -1151,6 +1151,24 @@ const main = async () => {
       )
       const finalRouteMetrics = getRouteMetrics(optimizeRegionCostsOutput)
 
+      if (process.env.PROFILE_UNRAVEL === "1") {
+        const optimizer = pipelineSolver.getSolver(
+          "optimizeRegionCosts",
+        ) as TinyHyperGraphSolver & {
+          initialSummary?: Record<string, number>
+          currentSummary?: Record<string, number>
+        }
+        console.log(
+          `unravel-profile ${sampleMeta.sampleName} ${JSON.stringify({
+            regionCostModel: optimizer.REGION_COST_MODEL,
+            traceDensityCostFactor: optimizer.TRACE_DENSITY_COST_FACTOR,
+            initialSummary: optimizer.initialSummary,
+            currentSummary: optimizer.currentSummary,
+            stats: optimizer.stats,
+          })}`,
+        )
+      }
+
       const result: BenchmarkSampleResult = {
         sampleName: sampleMeta.sampleName,
         circuitId: sampleMeta.circuitId,

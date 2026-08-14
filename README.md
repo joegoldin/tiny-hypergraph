@@ -78,7 +78,9 @@ statistics include `initialMaxRegionCost`, `finalMaxRegionCost`,
 `rerouteSearchIterationCount`, and `reusedRerouteCandidateCount`. Set
 `MAX_REROUTE_SEGMENT_INCREASE` to opt into a per-route detour ceiling, or
 `MAX_MUTATIONS: 0` to retain the solved input without running post-solve
-mutations. Integrations whose downstream router uses tuned capacity-node
+mutations. Run `PROFILE_UNRAVEL=1 ./benchmark.sh` to print the complete initial
+and final objective summaries plus search counters for each benchmark sample.
+Integrations whose downstream router uses tuned capacity-node
 failure estimates can set
 `REGION_COST_MODEL: "routing-risk"`; that model distinguishes same-layer and
 transition-pair crossings and ignores crossings between independent fixed

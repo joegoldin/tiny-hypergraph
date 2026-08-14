@@ -509,6 +509,21 @@ const isSwapParetoImprovement = (
   candidate.totalDownstreamRisk <=
     downstreamBaseline.totalDownstreamRisk + COST_EPSILON
 
+/**
+ * Whole-route replacement changes the topology consumed by detailed routing,
+ * so it must advance the primary region-cost objective. Secondary-only
+ * untwists remain available through boundary permutations, which preserve the
+ * route topology.
+ */
+const isRerouteParetoImprovement = (
+  candidate: UnravelRegionCostSummary,
+  current: UnravelRegionCostSummary,
+  downstreamBaseline: UnravelRegionCostSummary = current,
+) =>
+  isParetoImprovement(candidate, current, downstreamBaseline) &&
+  (candidate.maxRegionCost < current.maxRegionCost - COST_EPSILON ||
+    candidate.totalRegionCost < current.totalRegionCost - COST_EPSILON)
+
 const createWholeGraphProblem = (
   problem: TinyHyperGraphProblem,
   portCount: number,
@@ -576,10 +591,11 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
       ),
       {
         ...getTinyHyperGraphSolverOptions(inputSolver),
-        // Candidate generation should remain able to cross a currently dense
-        // region when that produces a globally shorter route. The completed
-        // state is rescored with the optimizer's full physical objective.
-        TRACE_DENSITY_COST_FACTOR: 0,
+        // Search the same cost model that the caller selected. Physical-risk
+        // and endpoint-clearance invariants are scored independently on the
+        // completed state; replacing the caller's objective here can hide the
+        // best valid path from A*.
+        TRACE_DENSITY_COST_FACTOR: inputSolver.TRACE_DENSITY_COST_FACTOR,
         STATIC_REACHABILITY_PRECHECK: false,
         ACCEPT_BEST_SOLUTION_ON_TIMEOUT: false,
         GREEDY_FINAL_ROUTE_ITERS: 0,
@@ -643,7 +659,7 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
   ) {
     const routeIdSet = new Set(routeIdsToReplace)
     this.indexInputRouteRegions(inputSolver)
-    this.TRACE_DENSITY_COST_FACTOR = 0
+    this.TRACE_DENSITY_COST_FACTOR = inputSolver.TRACE_DENSITY_COST_FACTOR
     this.solved = false
     this.failed = false
     this.error = null
@@ -2692,7 +2708,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         return { reusable: true }
       }
       if (
-        !isParetoImprovement(summary, this.currentSummary, this.initialSummary)
+        !isRerouteParetoImprovement(
+          summary,
+          this.currentSummary,
+          this.initialSummary,
+        )
       ) {
         return { reusable: true }
       }
@@ -3220,7 +3240,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         return
       }
       if (
-        !isParetoImprovement(summary, this.currentSummary, this.initialSummary)
+        !isRerouteParetoImprovement(
+          summary,
+          this.currentSummary,
+          this.initialSummary,
+        )
       )
         return
       if (
@@ -3752,13 +3776,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       const cache = solver.state.regionIntersectionCaches[regionId]!
       maxRegionCost = Math.max(maxRegionCost, cache.existingRegionCost)
       totalRegionCost += cache.existingRegionCost
-      if (this.REGION_COST_MODEL === "routing-complexity") {
-        maxRegionSegmentCount = Math.max(
-          maxRegionSegmentCount,
-          cache.existingSegmentCount,
-        )
-        squaredRegionSegmentCount += cache.existingSegmentCount ** 2
-      }
+      maxRegionSegmentCount = Math.max(
+        maxRegionSegmentCount,
+        cache.existingSegmentCount,
+      )
+      squaredRegionSegmentCount += cache.existingSegmentCount ** 2
       for (const [, fromPortId, toPortId] of solver.state.regionSegments[
         regionId
       ]!) {
@@ -3862,13 +3884,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       const downstreamRisk = downstreamRiskByRegion[regionId]!
       maxRegionCost = Math.max(maxRegionCost, cache.existingRegionCost)
       totalRegionCost += cache.existingRegionCost
-      if (this.REGION_COST_MODEL === "routing-complexity") {
-        maxRegionSegmentCount = Math.max(
-          maxRegionSegmentCount,
-          cache.existingSegmentCount,
-        )
-        squaredRegionSegmentCount += cache.existingSegmentCount ** 2
-      }
+      maxRegionSegmentCount = Math.max(
+        maxRegionSegmentCount,
+        cache.existingSegmentCount,
+      )
+      squaredRegionSegmentCount += cache.existingSegmentCount ** 2
       totalSegmentLength += segmentLengthByRegion[regionId]!
       maxRoutingRisk = Math.max(maxRoutingRisk, routingRisk)
       squaredRoutingRisk += routingRisk * routingRisk
@@ -3960,13 +3980,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       )
       squaredDownstreamRisk += regionMetrics.downstreamRisk ** 2
       totalDownstreamRisk += regionMetrics.downstreamRisk
-      if (this.REGION_COST_MODEL === "routing-complexity") {
-        maxRegionSegmentCount = Math.max(
-          maxRegionSegmentCount,
-          regionMetrics.segmentCount,
-        )
-        squaredRegionSegmentCount += regionMetrics.segmentCount ** 2
-      }
+      maxRegionSegmentCount = Math.max(
+        maxRegionSegmentCount,
+        regionMetrics.segmentCount,
+      )
+      squaredRegionSegmentCount += regionMetrics.segmentCount ** 2
     }
 
     return {

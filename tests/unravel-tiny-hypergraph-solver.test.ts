@@ -369,7 +369,7 @@ test("unravel solver accepts only beneficial boundary mutations", () => {
   )
 })
 
-test("unravel solver permits added length only when physical risk also falls", () => {
+test("unravel solver permits added wirelength without increasing occupancy", () => {
   const inputSolver = createCrossedSolvedSolver()
   // Crossing cost is angular, so preserve the same solved crossing while
   // making its untwisted boundary assignment physically longer.
@@ -390,6 +390,9 @@ test("unravel solver permits added length only when physical risk also falls", (
   )
   expect(solver.stats.finalTotalRoutingRisk).toBeLessThan(
     solver.stats.initialTotalRoutingRisk,
+  )
+  expect(solver.currentSummary.squaredRegionSegmentCount).toBeLessThanOrEqual(
+    solver.initialSummary.squaredRegionSegmentCount,
   )
 })
 
