@@ -1,6 +1,6 @@
 import type { DynamicAnglePair, DynamicAnglePairArrays } from "./types"
 
-export type RegionCostModel = "legacy" | "routing-risk"
+export type RegionCostModel = "legacy" | "routing-risk" | "routing-complexity"
 
 export const classifyIntersectionLayerMasks = (
   firstLayerMask: number,
@@ -11,6 +11,20 @@ export const classifyIntersectionLayerMasks = (
     return (firstLayerMask & secondLayerMask) !== 0
       ? "same-layer"
       : "transition-pair"
+  }
+
+  // Detailed routing consumes every segment pair, including region re-entry.
+  // A transition crossing a fixed chord competes for via placement and is a
+  // blocking interaction, while fixed chords on disjoint layers do not
+  // interact. Same-net ownership is handled by the caller/cache.
+  if (regionCostModel === "routing-complexity") {
+    const firstChangesLayer =
+      firstLayerMask > 0 && (firstLayerMask & (firstLayerMask - 1)) !== 0
+    const secondChangesLayer =
+      secondLayerMask > 0 && (secondLayerMask & (secondLayerMask - 1)) !== 0
+    if (firstChangesLayer && secondChangesLayer) return "transition-pair"
+    if (firstChangesLayer || secondChangesLayer) return "same-layer"
+    return (firstLayerMask & secondLayerMask) !== 0 ? "same-layer" : undefined
   }
 
   const firstChangesLayer =

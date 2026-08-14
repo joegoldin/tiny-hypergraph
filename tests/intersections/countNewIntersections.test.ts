@@ -115,6 +115,29 @@ test("routing-risk classification matches downstream crossing categories", () =>
   ).toBeUndefined()
 })
 
+test("routing-complexity classifies detailed-router blocking interactions", () => {
+  const z0 = 1 << 0
+  const z1 = 1 << 1
+  const transition = z0 | z1
+
+  expect(classifyIntersectionLayerMasks(z0, z0, "routing-complexity")).toBe(
+    "same-layer",
+  )
+  expect(
+    classifyIntersectionLayerMasks(
+      transition,
+      transition,
+      "routing-complexity",
+    ),
+  ).toBe("transition-pair")
+  expect(
+    classifyIntersectionLayerMasks(transition, z0, "routing-complexity"),
+  ).toBe("same-layer")
+  expect(
+    classifyIntersectionLayerMasks(z0, z1, "routing-complexity"),
+  ).toBeUndefined()
+})
+
 test("routing-risk counts crossing routes on the same electrical net", () => {
   const existingPairs = createDynamicAnglePairArrays([[7, 0, 0, 2, 0]])
   const crossingRouteWithDistinctOwner: DynamicAnglePair = [8, 1, 0, 3, 0]

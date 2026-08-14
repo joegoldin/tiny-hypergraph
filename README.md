@@ -71,6 +71,14 @@ uses tuned capacity-node failure estimates can set
 transition-pair crossings and ignores crossings between independent fixed
 layers.
 
+Integrations optimizing the amount of physical search handed to a detailed
+router can set `REGION_COST_MODEL: "routing-complexity"`. This model keeps one
+owner per electrical net, scores every segment (including region re-entry),
+treats a crossing between a layer transition and a fixed-layer chord as
+blocking via-placement work, and ignores fixed chords on disjoint layers. It
+uses the area- and segment-density-aware cost so crowded interactions rank
+ahead of topologically similar sparse ones.
+
 Existing routing can be preloaded through the standard region assignments:
 
 ```ts
