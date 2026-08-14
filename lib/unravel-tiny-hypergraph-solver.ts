@@ -15,6 +15,7 @@ import type {
 } from "./types"
 
 const COST_EPSILON = 1e-9
+const ROUTING_COMPLEXITY_TRACE_DENSITY_COST_FACTOR = 1
 
 interface BoundaryPortSlot {
   portId: PortId
@@ -111,6 +112,31 @@ const createWholeGraphProblem = (
   regionNetId: problem.regionNetId,
   portPenalty: problem.portPenalty,
 })
+
+const getUnravelCoreOptions = (
+  inputSolver: TinyHyperGraphSolver,
+  options?: UnravelTinyHyperGraphSolverOptions,
+): TinyHyperGraphSolverOptions => {
+  const inheritedOptions = getTinyHyperGraphSolverOptions(inputSolver)
+  const regionCostModel =
+    options?.REGION_COST_MODEL ?? inheritedOptions.REGION_COST_MODEL
+  const inheritedTraceDensityCostFactor =
+    inheritedOptions.TRACE_DENSITY_COST_FACTOR ?? 0
+
+  return {
+    ...inheritedOptions,
+    STATIC_REACHABILITY_PRECHECK: false,
+    ...options,
+    TRACE_DENSITY_COST_FACTOR:
+      options?.TRACE_DENSITY_COST_FACTOR ??
+      (regionCostModel === "routing-complexity"
+        ? Math.max(
+            ROUTING_COMPLEXITY_TRACE_DENSITY_COST_FACTOR,
+            inheritedTraceDensityCostFactor,
+          )
+        : inheritedTraceDensityCostFactor),
+  }
+}
 
 class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
   replacementRouteSegmentCount = 0
@@ -298,6 +324,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   acceptedMutationCount = 0
   evaluatedMutationCount = 0
   rejectedRerouteDetourCount = 0
+  rejectedCrossLayerSwapCount = 0
   prunedRerouteSearchCount = 0
   rerouteSearchIterationCount = 0
   rerouteSearchCount = 0
@@ -316,11 +343,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       )
     }
 
-    super(inputSolver.topology, inputSolver.problem, {
-      ...getTinyHyperGraphSolverOptions(inputSolver),
-      STATIC_REACHABILITY_PRECHECK: false,
-      ...options,
-    })
+    super(
+      inputSolver.topology,
+      inputSolver.problem,
+      getUnravelCoreOptions(inputSolver, options),
+    )
     this.inputSolver = inputSolver
     if (options?.MAX_MUTATIONS !== undefined) {
       this.MAX_MUTATIONS = Math.max(0, Math.floor(options.MAX_MUTATIONS))
@@ -404,6 +431,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       acceptedMutationCount: 0,
       evaluatedMutationCount: 0,
       rejectedRerouteDetourCount: 0,
+      rejectedCrossLayerSwapCount: 0,
       prunedRerouteSearchCount: 0,
       rerouteSearchIterationCount: 0,
       rerouteSearchCount: 0,
@@ -442,6 +470,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       acceptedMutationCount: this.acceptedMutationCount,
       evaluatedMutationCount: this.evaluatedMutationCount,
       rejectedRerouteDetourCount: this.rejectedRerouteDetourCount,
+      rejectedCrossLayerSwapCount: this.rejectedCrossLayerSwapCount,
       prunedRerouteSearchCount: this.prunedRerouteSearchCount,
       rerouteSearchIterationCount: this.rerouteSearchIterationCount,
       rerouteSearchCount: this.rerouteSearchCount,
@@ -579,6 +608,18 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
           if (left.routeId === undefined && right.routeId === undefined)
             continue
           if (left.routeId !== undefined && left.routeId === right.routeId) {
+            continue
+          }
+          // A geometric untwist may reorder ports within a copper layer, but
+          // exchanging ports across layers silently changes the long-range
+          // layer assignment of both routes. Local chord cost cannot see the
+          // pad/obstacle clearance consequences outside these two regions.
+          if (
+            this.REGION_COST_MODEL === "routing-complexity" &&
+            this.topology.portZ[left.portId] !==
+              this.topology.portZ[right.portId]
+          ) {
+            this.rejectedCrossLayerSwapCount += 1
             continue
           }
           this.evaluatedMutationCount += 1
@@ -1131,6 +1172,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       acceptedMutationCount: this.acceptedMutationCount,
       evaluatedMutationCount: this.evaluatedMutationCount,
       rejectedRerouteDetourCount: this.rejectedRerouteDetourCount,
+      rejectedCrossLayerSwapCount: this.rejectedCrossLayerSwapCount,
       prunedRerouteSearchCount: this.prunedRerouteSearchCount,
       rerouteSearchIterationCount: this.rerouteSearchIterationCount,
       rerouteSearchCount: this.rerouteSearchCount,

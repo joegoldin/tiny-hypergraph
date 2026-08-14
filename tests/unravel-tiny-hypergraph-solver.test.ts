@@ -9,7 +9,7 @@ import { loadSerializedHyperGraph } from "lib/compat/loadSerializedHyperGraph"
 import { TinyHyperGraphSectionSolver } from "lib/section-solver"
 import type { PortId, RegionId, RouteId } from "lib/types"
 
-const createCrossedSolvedSolver = () => {
+const createCrossedSolvedSolver = (portZ = new Int32Array(6)) => {
   const topology: TinyHyperGraphTopology = {
     portCount: 6,
     regionCount: 4,
@@ -35,7 +35,7 @@ const createCrossedSolvedSolver = () => {
     portAngleForRegion2: new Int32Array([0, 9000, 0, 9000, 0, 9000]),
     portX: new Float64Array([-1, -1, 0.5, 0.5, 2, 2]),
     portY: new Float64Array([1, -1, 1, -1, 1, -1]),
-    portZ: new Int32Array(6),
+    portZ,
   }
   const problem: TinyHyperGraphProblem = {
     routeCount: 2,
@@ -189,6 +189,45 @@ test("unravel solver accepts only beneficial boundary mutations", () => {
   repeatedSolver.solve()
   expect(repeatedSolver.state.regionSegments).toEqual(
     solver.state.regionSegments,
+  )
+})
+
+test("routing-complexity swaps preserve boundary layers", () => {
+  const inputSolver = createCrossedSolvedSolver(
+    new Int32Array([0, 0, 0, 1, 0, 0]),
+  )
+  const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
+    REGION_COST_MODEL: "routing-complexity",
+    MAX_HOT_REGIONS: 0,
+  })
+
+  solver.solve()
+
+  expect(solver.solved).toBe(true)
+  expect(solver.stats.acceptedMutationCount).toBe(0)
+  expect(solver.stats.rejectedCrossLayerSwapCount).toBeGreaterThan(0)
+  expect(solver.state.regionSegments).toEqual(inputSolver.state.regionSegments)
+})
+
+test("routing-complexity includes physical trace density by default", () => {
+  const inputSolver = createCrossedSolvedSolver()
+  const defaultDensitySolver = new UnravelTinyHyperGraphSolver(inputSolver, {
+    REGION_COST_MODEL: "routing-complexity",
+    MAX_MUTATIONS: 0,
+  })
+  const explicitZeroDensitySolver = new UnravelTinyHyperGraphSolver(
+    inputSolver,
+    {
+      REGION_COST_MODEL: "routing-complexity",
+      TRACE_DENSITY_COST_FACTOR: 0,
+      MAX_MUTATIONS: 0,
+    },
+  )
+
+  expect(defaultDensitySolver.TRACE_DENSITY_COST_FACTOR).toBe(1)
+  expect(explicitZeroDensitySolver.TRACE_DENSITY_COST_FACTOR).toBe(0)
+  expect(defaultDensitySolver.initialSummary.totalRegionCost).toBeGreaterThan(
+    explicitZeroDensitySolver.initialSummary.totalRegionCost,
   )
 })
 

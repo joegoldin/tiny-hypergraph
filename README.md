@@ -77,7 +77,11 @@ owner per electrical net, scores every segment (including region re-entry),
 treats a crossing between a layer transition and a fixed-layer chord as
 blocking via-placement work, and ignores fixed chords on disjoint layers. It
 uses the area- and segment-density-aware cost so crowded interactions rank
-ahead of topologically similar sparse ones.
+ahead of topologically similar sparse ones. Its default density coefficient
+charges the physical trace footprint even in regions without chord crossings,
+and boundary swaps stay on the same copper layer so a local untwist cannot
+silently move a long trace onto a pad's layer. Pass
+`TRACE_DENSITY_COST_FACTOR: 0` explicitly to disable the density term.
 
 Existing routing can be preloaded through the standard region assignments:
 
