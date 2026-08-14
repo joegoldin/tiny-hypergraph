@@ -60,11 +60,30 @@ export const countNewIntersectionsWithValues = (
 ): [number, number, number] => {
   const { netIds, lesserAngles, greaterAngles, layerMasks } = existingPairs
 
+  // Downstream risk groups all points for one connection into one chord and
+  // uses its first pair. A route that re-enters a region therefore must not
+  // add another transition or crossing to that region's risk estimate.
+  if (regionCostModel === "routing-risk" && netIds.includes(newNet)) {
+    return [0, 0, 0]
+  }
+
   let sameLayerIntersectionCount = 0
   let crossingLayerIntersectionCount = 0
 
   for (let i = 0; i < netIds.length; i++) {
     if (newNet === netIds[i]) continue
+
+    // Chords meeting at a shared boundary point can join without crossing.
+    // The downstream circle counter explicitly excludes these pairs.
+    if (
+      regionCostModel === "routing-risk" &&
+      (newLesserAngle === lesserAngles[i] ||
+        newLesserAngle === greaterAngles[i] ||
+        newGreaterAngle === lesserAngles[i] ||
+        newGreaterAngle === greaterAngles[i])
+    ) {
+      continue
+    }
 
     const lesserAngleIsInsideInterval =
       newLesserAngle < lesserAngles[i] && lesserAngles[i] < newGreaterAngle

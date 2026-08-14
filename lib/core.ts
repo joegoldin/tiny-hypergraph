@@ -1047,6 +1047,13 @@ export class TinyHyperGraphSolver extends BaseSolver {
   ) {
     const { state } = this
     const regionCache = state.regionIntersectionCaches[regionId]
+    const intersectionOwnerId = this.getCurrentIntersectionOwnerId()
+    if (
+      this.REGION_COST_MODEL === "routing-risk" &&
+      regionCache.netIds.includes(intersectionOwnerId)
+    ) {
+      return
+    }
     const segmentGeometry = this.populateSegmentGeometryScratch(
       regionId,
       port1Id,
@@ -1058,7 +1065,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
       newEntryExitLayerChanges,
     ] = countNewIntersectionsWithValues(
       regionCache,
-      this.getCurrentIntersectionOwnerId(),
+      intersectionOwnerId,
       segmentGeometry.lesserAngle,
       segmentGeometry.greaterAngle,
       segmentGeometry.layerMask,
@@ -1069,7 +1076,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
     const netIds = new Int32Array(nextLength)
     netIds.set(regionCache.netIds)
-    netIds[nextLength - 1] = this.getCurrentIntersectionOwnerId()
+    netIds[nextLength - 1] = intersectionOwnerId
 
     const lesserAngles = new Int32Array(nextLength)
     lesserAngles.set(regionCache.lesserAngles)

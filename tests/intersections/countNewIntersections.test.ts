@@ -135,3 +135,14 @@ test("routing-risk counts crossing routes on the same electrical net", () => {
     ),
   ).toEqual([0, 0, 0])
 })
+
+test("routing-risk ignores shared endpoints and repeated route segments", () => {
+  const existingPairs = createDynamicAnglePairArrays([[3, 0, 0, 2, 0]])
+
+  expect(
+    countNewIntersections(existingPairs, [4, 0, 0, 3, 0], "routing-risk"),
+  ).toEqual([0, 0, 0])
+  expect(
+    countNewIntersections(existingPairs, [3, 1, 0, 3, 1], "routing-risk"),
+  ).toEqual([0, 0, 0])
+})

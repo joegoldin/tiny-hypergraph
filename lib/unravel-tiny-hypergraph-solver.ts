@@ -827,18 +827,27 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     const lesserAngles: number[] = []
     const greaterAngles: number[] = []
     const layerMasks: number[] = []
+    const seenIntersectionOwnerIds = new Set<number>()
     let entryExitLayerChanges = 0
 
     for (const [routeId, fromPortId, toPortId] of this.state.regionSegments[
       regionId
     ]!) {
       if (routeId === removedRouteId) continue
+      const intersectionOwnerId = this.getIntersectionOwnerId(routeId)
+      if (
+        this.REGION_COST_MODEL === "routing-risk" &&
+        seenIntersectionOwnerIds.has(intersectionOwnerId)
+      ) {
+        continue
+      }
+      seenIntersectionOwnerIds.add(intersectionOwnerId)
       const geometry = this.populateSegmentGeometryScratch(
         regionId,
         fromPortId,
         toPortId,
       )
-      intersectionOwnerIds.push(this.getIntersectionOwnerId(routeId))
+      intersectionOwnerIds.push(intersectionOwnerId)
       lesserAngles.push(geometry.lesserAngle)
       greaterAngles.push(geometry.greaterAngle)
       layerMasks.push(geometry.layerMask)
@@ -861,6 +870,15 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
           intersectionOwnerIds[leftIndex] === intersectionOwnerIds[rightIndex]
         )
           continue
+        if (
+          this.REGION_COST_MODEL === "routing-risk" &&
+          (lesserAngles[leftIndex] === lesserAngles[rightIndex] ||
+            lesserAngles[leftIndex] === greaterAngles[rightIndex] ||
+            greaterAngles[leftIndex] === lesserAngles[rightIndex] ||
+            greaterAngles[leftIndex] === greaterAngles[rightIndex])
+        ) {
+          continue
+        }
         const intersects =
           (lesserAngles[rightIndex]! < lesserAngles[leftIndex]! &&
             lesserAngles[leftIndex]! < greaterAngles[rightIndex]!) !==
@@ -943,6 +961,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     const lesserAngles: number[] = []
     const greaterAngles: number[] = []
     const layerMasks: number[] = []
+    const seenIntersectionOwnerIds = new Set<number>()
     let entryExitLayerChanges = 0
 
     for (const [routeId, originalFromPortId, originalToPortId] of this.state
@@ -962,7 +981,15 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         fromPortId,
         toPortId,
       )
-      intersectionOwnerIds.push(this.getIntersectionOwnerId(routeId))
+      const intersectionOwnerId = this.getIntersectionOwnerId(routeId)
+      if (
+        this.REGION_COST_MODEL === "routing-risk" &&
+        seenIntersectionOwnerIds.has(intersectionOwnerId)
+      ) {
+        continue
+      }
+      seenIntersectionOwnerIds.add(intersectionOwnerId)
+      intersectionOwnerIds.push(intersectionOwnerId)
       lesserAngles.push(geometry.lesserAngle)
       greaterAngles.push(geometry.greaterAngle)
       layerMasks.push(geometry.layerMask)
@@ -985,6 +1012,15 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
           intersectionOwnerIds[leftIndex] === intersectionOwnerIds[rightIndex]
         )
           continue
+        if (
+          this.REGION_COST_MODEL === "routing-risk" &&
+          (lesserAngles[leftIndex] === lesserAngles[rightIndex] ||
+            lesserAngles[leftIndex] === greaterAngles[rightIndex] ||
+            greaterAngles[leftIndex] === lesserAngles[rightIndex] ||
+            greaterAngles[leftIndex] === greaterAngles[rightIndex])
+        ) {
+          continue
+        }
         const intersects =
           (lesserAngles[rightIndex]! < lesserAngles[leftIndex]! &&
             lesserAngles[leftIndex]! < greaterAngles[rightIndex]!) !==
