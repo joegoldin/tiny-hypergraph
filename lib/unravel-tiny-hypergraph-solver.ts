@@ -210,6 +210,8 @@ interface BoundaryPortSlot {
   routeId?: RouteId
   region1Id: RegionId
   region2Id: RegionId
+  region1OtherPortId?: PortId
+  region2OtherPortId?: PortId
 }
 
 interface BoundaryPortGroup {
@@ -220,6 +222,7 @@ interface BoundaryPortGroup {
 interface PortOccurrence {
   regionId: RegionId
   routeId: RouteId
+  otherPortId: PortId
 }
 
 interface UnravelRegionCostSummary extends RegionCostSummary {
@@ -564,6 +567,12 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
   private readonly physicalNeighborsByRouteId: Array<
     Map<number, readonly PortId[]>
   >
+  private readonly replacementRegionCostByRegionAndPort = new Map<
+    number,
+    Map<PortId, number>
+  >()
+  replacementRegionCostCacheHitCount = 0
+  replacementRegionCostCacheMissCount = 0
   private indexedInputRegionSegments?: Array<[RouteId, PortId, PortId][]>
   private readonly inputRegionIdsByRouteId: RegionId[][]
 
@@ -682,6 +691,7 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     this.writableRegionMask.fill(0)
     this.writableRegionIds.length = 0
     this.blockingRouteIds.clear()
+    this.replacementRegionCostByRegionAndPort.clear()
 
     this.state.portAssignment.set(inputSolver.state.portAssignment)
     this.state.regionSegments = inputSolver.state.regionSegments.slice()
@@ -901,6 +911,42 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
       )
       this.rebuildRegionCache(regionId)
     }
+    // A multi-route ejection chain continues from the state modified above.
+    // Marginal chord costs are exact only for the route state in which they
+    // were computed, so start the next route with a fresh memo while retaining
+    // geometry-only neighbor caches.
+    this.replacementRegionCostByRegionAndPort.clear()
+  }
+
+  protected override computeRegionCostAfterAddingSegment(
+    regionId: RegionId,
+    currentPortId: PortId,
+    neighborPortId: PortId,
+  ): number {
+    const lesserPortId = Math.min(currentPortId, neighborPortId)
+    const greaterPortId = Math.max(currentPortId, neighborPortId)
+    const regionPortKey = regionId * this.topology.portCount + lesserPortId
+    let costByGreaterPortId =
+      this.replacementRegionCostByRegionAndPort.get(regionPortKey)
+    const cachedCost = costByGreaterPortId?.get(greaterPortId)
+    if (cachedCost !== undefined) {
+      this.replacementRegionCostCacheHitCount += 1
+      return cachedCost
+    }
+
+    this.replacementRegionCostCacheMissCount += 1
+    const cost = super.computeRegionCostAfterAddingSegment(
+      regionId,
+      currentPortId,
+      neighborPortId,
+    )
+    costByGreaterPortId ??= new Map<PortId, number>()
+    costByGreaterPortId.set(greaterPortId, cost)
+    this.replacementRegionCostByRegionAndPort.set(
+      regionPortKey,
+      costByGreaterPortId,
+    )
+    return cost
   }
 
   getReplacementState() {
@@ -1143,6 +1189,14 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   private optimizationPhase: "initial_untwist" | "reroute" | "final_untwist" =
     "initial_untwist"
   private reachedRerouteLimit = false
+
+  get replacementRegionCostCacheHitCount() {
+    return this.routeReplacementSolver?.replacementRegionCostCacheHitCount ?? 0
+  }
+
+  get replacementRegionCostCacheMissCount() {
+    return this.routeReplacementSolver?.replacementRegionCostCacheMissCount ?? 0
+  }
 
   constructor(
     inputSolver: TinyHyperGraphSolver,
@@ -1525,6 +1579,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       terminalKeepoutGeometryCacheSize: this.terminalKeepoutGeometries.length,
       terminalKeepoutPhysicalNeighborCacheHitCount: 0,
       terminalKeepoutPhysicalNeighborCacheMissCount: 0,
+      replacementRegionCostCacheHitCount: 0,
+      replacementRegionCostCacheMissCount: 0,
       rejectedCrossLayerSwapCount: 0,
       prunedRerouteSearchCount: 0,
       rerouteSearchIterationCount: 0,
@@ -1649,6 +1705,10 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         this.routeReplacementSolver?.physicalNeighborCacheHitCount ?? 0,
       terminalKeepoutPhysicalNeighborCacheMissCount:
         this.routeReplacementSolver?.physicalNeighborCacheMissCount ?? 0,
+      replacementRegionCostCacheHitCount:
+        this.replacementRegionCostCacheHitCount,
+      replacementRegionCostCacheMissCount:
+        this.replacementRegionCostCacheMissCount,
       rejectedCrossLayerSwapCount: this.rejectedCrossLayerSwapCount,
       prunedRerouteSearchCount: this.prunedRerouteSearchCount,
       rerouteSearchIterationCount: this.rerouteSearchIterationCount,
@@ -1931,8 +1991,16 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       for (const [routeId, fromPortId, toPortId] of this.state.regionSegments[
         regionId
       ]!) {
-        occurrencesByPort[fromPortId]!.push({ regionId, routeId })
-        occurrencesByPort[toPortId]!.push({ regionId, routeId })
+        occurrencesByPort[fromPortId]!.push({
+          regionId,
+          routeId,
+          otherPortId: toPortId,
+        })
+        occurrencesByPort[toPortId]!.push({
+          regionId,
+          routeId,
+          otherPortId: fromPortId,
+        })
       }
     }
 
@@ -1947,6 +2015,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       const region2Id = Math.max(incidentRegionIds[0]!, incidentRegionIds[1]!)
 
       let routeId: RouteId | undefined
+      let region1OtherPortId: PortId | undefined
+      let region2OtherPortId: PortId | undefined
       if (occurrences.length === 0) {
         if (this.state.portAssignment[portId] !== -1) continue
       } else {
@@ -1961,11 +2031,24 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         ) {
           continue
         }
+        region1OtherPortId = occurrences.find(
+          ({ regionId }) => regionId === region1Id,
+        )!.otherPortId
+        region2OtherPortId = occurrences.find(
+          ({ regionId }) => regionId === region2Id,
+        )!.otherPortId
       }
 
       const boundaryKey = `${region1Id}:${region2Id}`
       const group = groupsByBoundary.get(boundaryKey) ?? []
-      group.push({ portId, routeId, region1Id, region2Id })
+      group.push({
+        portId,
+        routeId,
+        region1Id,
+        region2Id,
+        region1OtherPortId,
+        region2OtherPortId,
+      })
       groupsByBoundary.set(boundaryKey, group)
     }
 
@@ -2314,6 +2397,15 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     const context = this.createBoundaryScoringContext()
     let bestMutation: BoundaryMutation | undefined
     for (const group of this.getBoundaryPortGroups()) {
+      const { region1Id, region2Id } = group.slots[0]!
+      if (
+        this.state.regionIntersectionCaches[region1Id]!.existingRegionCost <=
+          COST_EPSILON &&
+        this.state.regionIntersectionCaches[region2Id]!.existingRegionCost <=
+          COST_EPSILON
+      ) {
+        continue
+      }
       for (let leftIndex = 0; leftIndex < group.slots.length; leftIndex++) {
         const left = group.slots[leftIndex]!
         for (
@@ -2352,6 +2444,15 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     const context = this.createBoundaryScoringContext()
     let bestMutation: BoundaryMutation | undefined
     for (const group of this.getBoundaryPortGroups()) {
+      const { region1Id, region2Id } = group.slots[0]!
+      if (
+        this.state.regionIntersectionCaches[region1Id]!.existingRegionCost <=
+          COST_EPSILON &&
+        this.state.regionIntersectionCaches[region2Id]!.existingRegionCost <=
+          COST_EPSILON
+      ) {
+        continue
+      }
       for (let firstIndex = 0; firstIndex < group.slots.length; firstIndex++) {
         for (
           let secondIndex = firstIndex + 1;
@@ -2408,44 +2509,22 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   private preservesRouteLayerChangeCountsAfterPermutation(
     permutation: BoundaryPermutation,
   ): boolean {
-    const routeIds = new Set(
-      permutation.slots
-        .map(({ routeId }) => routeId)
-        .filter((routeId): routeId is RouteId => routeId !== undefined),
-    )
-    const { region1Id, region2Id } = permutation.slots[0]!
-    for (const routeId of routeIds) {
+    for (let index = 0; index < permutation.slots.length; index++) {
+      const source = permutation.slots[index]!
+      if (source.routeId === undefined) continue
+      const destinationPortId = permutation.destinationPortIds[index]!
+      const sourceZ = this.topology.portZ[source.portId]!
+      const destinationZ = this.topology.portZ[destinationPortId]!
       let currentLayerChangeCount = 0
       let permutedLayerChangeCount = 0
-      for (const regionId of [region1Id, region2Id]) {
-        for (const [
-          segmentRouteId,
-          originalFromPortId,
-          originalToPortId,
-        ] of this.state.regionSegments[regionId]!) {
-          if (segmentRouteId !== routeId) continue
-          const fromPortId = this.remapPortForBoundaryPermutation(
-            routeId,
-            originalFromPortId,
-            permutation,
-          )
-          const toPortId = this.remapPortForBoundaryPermutation(
-            routeId,
-            originalToPortId,
-            permutation,
-          )
-          if (
-            this.topology.portZ[originalFromPortId] !==
-            this.topology.portZ[originalToPortId]
-          ) {
-            currentLayerChangeCount += 1
-          }
-          if (
-            this.topology.portZ[fromPortId] !== this.topology.portZ[toPortId]
-          ) {
-            permutedLayerChangeCount += 1
-          }
-        }
+      for (const otherPortId of [
+        source.region1OtherPortId,
+        source.region2OtherPortId,
+      ]) {
+        if (otherPortId === undefined) continue
+        const otherZ = this.topology.portZ[otherPortId]!
+        if (sourceZ !== otherZ) currentLayerChangeCount += 1
+        if (destinationZ !== otherZ) permutedLayerChangeCount += 1
       }
       if (currentLayerChangeCount !== permutedLayerChangeCount) return false
     }
@@ -2593,14 +2672,20 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       return
     }
 
-    // Rank every route by the exact objective it could achieve if it vanished,
-    // then use that value as an admissible lower bound for branch-and-bound.
-    // Plateau improvements are fully Pareto-scored after the route is re-added;
-    // there is no board-size or sample-dependent eligibility threshold.
+    // Whole-route replacement is the expensive, topology-changing part of the
+    // optimizer. Use it only where removing a route can lower the current peak;
+    // total-cost plateaus are optimized by the exhaustive topology-preserving
+    // boundary neighborhood. This is an objective-derived decomposition, not
+    // a graph-size or sample-dependent eligibility threshold.
     const candidateRegionIds = Array.from(
       { length: this.topology.regionCount },
       (_, regionId) => regionId,
     )
+      .filter(
+        (regionId) =>
+          this.state.regionIntersectionCaches[regionId]!.existingRegionCost >
+          COST_EPSILON,
+      )
       .sort(
         (left, right) =>
           this.state.regionIntersectionCaches[right]!.existingRegionCost -
@@ -2620,6 +2705,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         routeId,
         optimisticSummary: this.summarizeStateWithoutRoute(routeId),
       }))
+      .filter(
+        ({ optimisticSummary }) =>
+          optimisticSummary.maxRegionCost <
+          this.currentSummary.maxRegionCost - COST_EPSILON,
+      )
       .sort(
         (left, right) =>
           compareRegionCostSummaries(
@@ -4293,6 +4383,10 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         this.routeReplacementSolver?.physicalNeighborCacheHitCount ?? 0,
       terminalKeepoutPhysicalNeighborCacheMissCount:
         this.routeReplacementSolver?.physicalNeighborCacheMissCount ?? 0,
+      replacementRegionCostCacheHitCount:
+        this.replacementRegionCostCacheHitCount,
+      replacementRegionCostCacheMissCount:
+        this.replacementRegionCostCacheMissCount,
       rejectedCrossLayerSwapCount: this.rejectedCrossLayerSwapCount,
       prunedRerouteSearchCount: this.prunedRerouteSearchCount,
       rerouteSearchIterationCount: this.rerouteSearchIterationCount,

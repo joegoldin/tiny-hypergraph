@@ -628,7 +628,7 @@ test("unravel solver stops rerouting once the bottleneck is eliminated", () => {
 
   expect(getMaxRegionCost(solver)).toBe(0)
   expect(solver.stats.acceptedRerouteMutationCount).toBe(1)
-  expect(solver.stats.reusedRerouteCandidateCount).toBeGreaterThan(0)
+  expect(solver.stats.reusedRerouteCandidateCount).toBe(0)
   expect(solver.stats.optimizationStopReason).toBe("local_optimum")
 })
 
