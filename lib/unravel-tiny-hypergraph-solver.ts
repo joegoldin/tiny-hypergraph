@@ -1,4 +1,5 @@
 import {
+  type Candidate,
   createEmptyRegionIntersectionCache,
   getTinyHyperGraphSolverOptions,
   type RegionCostSummary,
@@ -8,7 +9,6 @@ import {
 } from "./core"
 import { computeRoutingRiskRegionCostWithPreparedCapacity } from "./computeRegionCost"
 import { classifyIntersectionLayerMasks } from "./countNewIntersections"
-import { IndexedCandidateHeap } from "./indexed-candidate-heap"
 import type {
   PortId,
   RegionId,
@@ -17,6 +17,142 @@ import type {
 } from "./types"
 
 const COST_EPSILON = 1e-9
+
+const getPointToSegmentDistance = (
+  pointX: number,
+  pointY: number,
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+): number => {
+  const dx = endX - startX
+  const dy = endY - startY
+  const lengthSquared = dx * dx + dy * dy
+  if (lengthSquared <= COST_EPSILON) {
+    return Math.hypot(pointX - startX, pointY - startY)
+  }
+  const projection = Math.max(
+    0,
+    Math.min(
+      1,
+      ((pointX - startX) * dx + (pointY - startY) * dy) / lengthSquared,
+    ),
+  )
+  return Math.hypot(
+    pointX - (startX + projection * dx),
+    pointY - (startY + projection * dy),
+  )
+}
+
+interface TerminalKeepout {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+  z: number
+  traceCenterClearance: number
+  viaCenterClearance?: number
+}
+
+interface IndexedTerminalKeepout extends TerminalKeepout {
+  netId: number
+}
+
+const getTerminalKeepoutCellKey = (z: number, cellX: number, cellY: number) =>
+  `${z}:${cellX}:${cellY}`
+
+const getPointToBoundsDistance = (
+  x: number,
+  y: number,
+  bounds: TerminalKeepout,
+): number =>
+  Math.hypot(
+    Math.max(bounds.minX - x, 0, x - bounds.maxX),
+    Math.max(bounds.minY - y, 0, y - bounds.maxY),
+  )
+
+const segmentIntersectsBounds = (
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+  bounds: TerminalKeepout,
+): boolean => {
+  let minimumT = 0
+  let maximumT = 1
+  for (const [start, delta, minimum, maximum] of [
+    [startX, endX - startX, bounds.minX, bounds.maxX],
+    [startY, endY - startY, bounds.minY, bounds.maxY],
+  ] as const) {
+    if (Math.abs(delta) <= COST_EPSILON) {
+      if (start < minimum || start > maximum) return false
+      continue
+    }
+    const firstT = (minimum - start) / delta
+    const secondT = (maximum - start) / delta
+    minimumT = Math.max(minimumT, Math.min(firstT, secondT))
+    maximumT = Math.min(maximumT, Math.max(firstT, secondT))
+    if (minimumT > maximumT) return false
+  }
+  return true
+}
+
+const getSegmentToBoundsDistance = (
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+  bounds: TerminalKeepout,
+): number => {
+  if (segmentIntersectsBounds(startX, startY, endX, endY, bounds)) return 0
+  return Math.min(
+    getPointToBoundsDistance(startX, startY, bounds),
+    getPointToBoundsDistance(endX, endY, bounds),
+    ...[
+      [bounds.minX, bounds.minY],
+      [bounds.minX, bounds.maxY],
+      [bounds.maxX, bounds.minY],
+      [bounds.maxX, bounds.maxY],
+    ].map(([x, y]) =>
+      getPointToSegmentDistance(x!, y!, startX, startY, endX, endY),
+    ),
+  )
+}
+
+const getSegmentToTerminalKeepoutClearance = ({
+  startX,
+  startY,
+  startZ,
+  endX,
+  endY,
+  endZ,
+  keepout,
+}: {
+  startX: number
+  startY: number
+  startZ: number
+  endX: number
+  endY: number
+  endZ: number
+  keepout: TerminalKeepout
+}): number => {
+  const isLayerChange = startZ !== endZ
+  if (
+    (!isLayerChange && keepout.z !== startZ) ||
+    (isLayerChange &&
+      (keepout.z < Math.min(startZ, endZ) ||
+        keepout.z > Math.max(startZ, endZ)))
+  ) {
+    return Number.POSITIVE_INFINITY
+  }
+  return (
+    getSegmentToBoundsDistance(startX, startY, endX, endY, keepout) -
+    (isLayerChange
+      ? (keepout.viaCenterClearance ?? keepout.traceCenterClearance)
+      : keepout.traceCenterClearance)
+  )
+}
 
 interface BoundaryPortSlot {
   portId: PortId
@@ -97,6 +233,7 @@ interface RerouteMutation {
     routeId: RouteId
     layerChangeCount: number
     segmentLength: number
+    foreignEndpointClearances: Float64Array
   }>
   routingRiskByRegion: Float64Array
   segmentRoutingRiskByRegion: Float64Array
@@ -313,7 +450,15 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
   private indexedInputRegionSegments?: Array<[RouteId, PortId, PortId][]>
   private readonly inputRegionIdsByRouteId: RegionId[][]
 
-  constructor(inputSolver: TinyHyperGraphSolver, maxIterations: number) {
+  constructor(
+    inputSolver: TinyHyperGraphSolver,
+    maxIterations: number,
+    private readonly isReplacementSegmentAllowed?: (
+      routeId: RouteId,
+      fromPortId: PortId,
+      toPortId: PortId,
+    ) => boolean,
+  ) {
     super(
       inputSolver.topology,
       createWholeGraphProblem(
@@ -348,21 +493,6 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     this.inputRegionIdsByRouteId = Array.from(
       { length: this.problem.routeCount },
       () => [],
-    )
-    // The geometric heuristic is goal-directed but not consistent with the
-    // marginal region-cost objective, so a dequeued hop must remain reopenable.
-    // Decrease-key still removes dominated queued copies, avoiding stale heap
-    // expansion without changing the search's path-order semantics.
-    this.state.candidateQueue = new IndexedCandidateHeap(
-      this.topology.regionCount,
-      {
-        hopCapacity: this.candidateHopCapacity,
-        hopSlotStride: this.candidateHopSlotStride,
-        firstRegionByPortId: this.candidateFirstRegionByPortId,
-        secondRegionByPortId: this.candidateSecondRegionByPortId,
-        incidentPortRegion: this.topology.incidentPortRegion,
-      },
-      false,
     )
   }
 
@@ -509,10 +639,49 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
     return true
   }
 
+  override computeG(
+    currentCandidate: Candidate,
+    neighborPortId: PortId,
+    maximumCost = Number.POSITIVE_INFINITY,
+    knownSegmentDistance?: number,
+  ): number {
+    if (
+      this.state.currentRouteId !== undefined &&
+      this.isReplacementSegmentAllowed &&
+      !this.isReplacementSegmentAllowed(
+        this.state.currentRouteId,
+        currentCandidate.portId,
+        neighborPortId,
+      )
+    ) {
+      return Number.POSITIVE_INFINITY
+    }
+    return super.computeG(
+      currentCandidate,
+      neighborPortId,
+      maximumCost,
+      knownSegmentDistance,
+    )
+  }
+
   override onPathFound(
     finalCandidate: Parameters<TinyHyperGraphSolver["onPathFound"]>[0],
   ) {
     const solvedSegments = this.getSolvedPathSegments(finalCandidate)
+    if (
+      this.state.currentRouteId !== undefined &&
+      this.isReplacementSegmentAllowed &&
+      solvedSegments.some(
+        ({ fromPortId, toPortId }) =>
+          !this.isReplacementSegmentAllowed!(
+            this.state.currentRouteId!,
+            fromPortId,
+            toPortId,
+          ),
+      )
+    ) {
+      return
+    }
     this.replacementRouteSegmentCount = solvedSegments.length
     this.replacementRouteSegmentCountByRouteId[this.state.currentRouteId!] =
       solvedSegments.length
@@ -610,6 +779,12 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
       const touchedRegionIds = new Set<RegionId>()
 
       for (const { regionId, fromPortId, toPortId } of path) {
+        if (
+          this.isReplacementSegmentAllowed &&
+          !this.isReplacementSegmentAllowed(routeId, fromPortId, toPortId)
+        ) {
+          return false
+        }
         if (this.isRegionReservedForDifferentNet(regionId)) return false
         for (const portId of [fromPortId, toPortId]) {
           const assignedNetId = this.state.portAssignment[portId]!
@@ -733,6 +908,12 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   rejectedRerouteDetourCount = 0
   rejectedRerouteLayerChangeCount = 0
   rejectedReroutePhysicalRiskCount = 0
+  rejectedRerouteEndpointKeepoutCount = 0
+  prunedRerouteEndpointKeepoutSegmentCount = 0
+  rejectedBoundaryEndpointKeepoutCount = 0
+  terminalKeepoutBroadPhaseQueryCount = 0
+  terminalKeepoutBroadPhaseCandidateCount = 0
+  terminalKeepoutExactCheckCount = 0
   rejectedCrossLayerSwapCount = 0
   prunedRerouteSearchCount = 0
   rerouteSearchIterationCount = 0
@@ -743,6 +924,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   private readonly initialRouteSegmentCounts: Int32Array
   private readonly routeLayerChangeCountByRouteId: Int32Array
   private readonly routeSegmentLengthByRouteId: Float64Array
+  private readonly terminalKeepouts: IndexedTerminalKeepout[]
+  private readonly terminalKeepoutCellSize: number
+  private readonly terminalKeepoutIndexesByCell: Map<string, number[]>
+  private readonly hasForeignEndpointKeepouts: boolean
+  private readonly routeForeignEndpointClearancesByRouteId: Float64Array[]
   private readonly routingRiskOwnerByRouteId: Int32Array
   private readonly physicalPointIdByPortId: Int32Array
   private routingRiskByRegion: Float64Array
@@ -881,6 +1067,118 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       this.endpointPortMask[this.problem.routeStartPort[routeId]!] = 1
       this.endpointPortMask[this.problem.routeEndPort[routeId]!] = 1
     }
+    const getTerminalKeepouts = (portId: PortId): TerminalKeepout[] => {
+      const metadata = this.topology.portMetadata?.[portId] as
+        | { _tinyTerminalKeepouts?: unknown }
+        | undefined
+      if (!Array.isArray(metadata?._tinyTerminalKeepouts)) return []
+      return metadata._tinyTerminalKeepouts.filter(
+        (candidate): candidate is TerminalKeepout =>
+          typeof candidate === "object" &&
+          candidate !== null &&
+          ["minX", "minY", "maxX", "maxY", "z", "traceCenterClearance"].every(
+            (key) =>
+              Number.isFinite(
+                (candidate as Record<string, unknown>)[key] as number,
+              ),
+          ) &&
+          ((candidate as Record<string, unknown>).viaCenterClearance ===
+            undefined ||
+            Number.isFinite(
+              (candidate as Record<string, unknown>)
+                .viaCenterClearance as number,
+            )) &&
+          (candidate as TerminalKeepout).minX <=
+            (candidate as TerminalKeepout).maxX &&
+          (candidate as TerminalKeepout).minY <=
+            (candidate as TerminalKeepout).maxY &&
+          (candidate as TerminalKeepout).traceCenterClearance >= 0 &&
+          ((candidate as TerminalKeepout).viaCenterClearance ?? 0) >= 0,
+      )
+    }
+    const terminalKeepoutByKey = new Map<string, IndexedTerminalKeepout>()
+    for (let routeId = 0; routeId < this.problem.routeCount; routeId++) {
+      const netId = this.problem.routeNet[routeId]!
+      for (const portId of [
+        this.problem.routeStartPort[routeId]!,
+        this.problem.routeEndPort[routeId]!,
+      ]) {
+        for (const keepout of getTerminalKeepouts(portId)) {
+          const key = [
+            netId,
+            keepout.minX,
+            keepout.minY,
+            keepout.maxX,
+            keepout.maxY,
+            keepout.z,
+            keepout.traceCenterClearance,
+            keepout.viaCenterClearance ?? keepout.traceCenterClearance,
+          ].join(":")
+          if (!terminalKeepoutByKey.has(key)) {
+            terminalKeepoutByKey.set(key, { ...keepout, netId })
+          }
+        }
+      }
+    }
+    this.terminalKeepouts = [...terminalKeepoutByKey.values()]
+    this.hasForeignEndpointKeepouts =
+      this.terminalKeepouts.length > 0 &&
+      new Set(this.problem.routeNet).size > 1
+    // Index each keepout by its fully inflated physical envelope. The cell
+    // size is derived from the largest envelope, so this broad phase has no
+    // board- or sample-specific tuning parameter and never excludes an exact
+    // geometry candidate.
+    this.terminalKeepoutCellSize = this.hasForeignEndpointKeepouts
+      ? Math.max(
+          ...this.terminalKeepouts.map((keepout) => {
+            const expansion = Math.max(
+              keepout.traceCenterClearance,
+              keepout.viaCenterClearance ?? keepout.traceCenterClearance,
+            )
+            return Math.max(
+              keepout.maxX - keepout.minX + expansion * 2,
+              keepout.maxY - keepout.minY + expansion * 2,
+            )
+          }),
+          COST_EPSILON,
+        )
+      : 1
+    this.terminalKeepoutIndexesByCell = new Map()
+    for (
+      let keepoutIndex = 0;
+      keepoutIndex < this.terminalKeepouts.length;
+      keepoutIndex++
+    ) {
+      const keepout = this.terminalKeepouts[keepoutIndex]!
+      const expansion = Math.max(
+        keepout.traceCenterClearance,
+        keepout.viaCenterClearance ?? keepout.traceCenterClearance,
+      )
+      const minCellX = Math.floor(
+        (keepout.minX - expansion) / this.terminalKeepoutCellSize,
+      )
+      const maxCellX = Math.floor(
+        (keepout.maxX + expansion) / this.terminalKeepoutCellSize,
+      )
+      const minCellY = Math.floor(
+        (keepout.minY - expansion) / this.terminalKeepoutCellSize,
+      )
+      const maxCellY = Math.floor(
+        (keepout.maxY + expansion) / this.terminalKeepoutCellSize,
+      )
+      for (let cellX = minCellX; cellX <= maxCellX; cellX++) {
+        for (let cellY = minCellY; cellY <= maxCellY; cellY++) {
+          const cellKey = getTerminalKeepoutCellKey(keepout.z, cellX, cellY)
+          const indexes = this.terminalKeepoutIndexesByCell.get(cellKey) ?? []
+          indexes.push(keepoutIndex)
+          this.terminalKeepoutIndexesByCell.set(cellKey, indexes)
+        }
+      }
+    }
+    this.routeForeignEndpointClearancesByRouteId = Array.from(
+      { length: this.problem.routeCount },
+      () => new Float64Array(this.terminalKeepouts.length),
+    )
     for (const segments of this.state.regionSegments) {
       for (const [routeId, fromPortId, toPortId] of segments) {
         this.initialRouteSegmentCounts[routeId] += 1
@@ -893,6 +1191,10 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
           toPortId,
         )
       }
+    }
+    for (let routeId = 0; routeId < this.problem.routeCount; routeId++) {
+      this.routeForeignEndpointClearancesByRouteId[routeId] =
+        this.computeRouteForeignEndpointClearances(this, routeId)
     }
 
     const initialScoredState = this.summarizeSolverState(this)
@@ -910,9 +1212,13 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       initialMaxRegionCost: this.initialSummary.maxRegionCost,
       initialTotalRegionCost: this.initialSummary.totalRegionCost,
       initialTotalSegmentLength: this.initialSummary.totalSegmentLength,
+      initialMinForeignEndpointClearance:
+        this.getMinimumForeignEndpointClearance(),
       finalMaxRegionCost: this.currentSummary.maxRegionCost,
       finalTotalRegionCost: this.currentSummary.totalRegionCost,
       finalTotalSegmentLength: this.currentSummary.totalSegmentLength,
+      finalMinForeignEndpointClearance:
+        this.getMinimumForeignEndpointClearance(),
       acceptedMutationCount: 0,
       acceptedSwapMutationCount: 0,
       acceptedCycleMutationCount: 0,
@@ -922,6 +1228,16 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       rejectedRerouteDetourCount: 0,
       rejectedRerouteLayerChangeCount: 0,
       rejectedReroutePhysicalRiskCount: 0,
+      rejectedRerouteEndpointKeepoutCount: 0,
+      prunedRerouteEndpointKeepoutSegmentCount: 0,
+      rejectedBoundaryEndpointKeepoutCount: 0,
+      terminalKeepoutCount: this.terminalKeepouts.length,
+      terminalKeepoutCellSize: this.terminalKeepoutCellSize,
+      terminalKeepoutBroadPhaseQueryCount:
+        this.terminalKeepoutBroadPhaseQueryCount,
+      terminalKeepoutBroadPhaseCandidateCount:
+        this.terminalKeepoutBroadPhaseCandidateCount,
+      terminalKeepoutExactCheckCount: this.terminalKeepoutExactCheckCount,
       rejectedCrossLayerSwapCount: 0,
       prunedRerouteSearchCount: 0,
       rerouteSearchIterationCount: 0,
@@ -996,6 +1312,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       finalMaxRegionCost: this.currentSummary.maxRegionCost,
       finalTotalRegionCost: this.currentSummary.totalRegionCost,
       finalTotalSegmentLength: this.currentSummary.totalSegmentLength,
+      finalMinForeignEndpointClearance:
+        this.getMinimumForeignEndpointClearance(),
       acceptedMutationCount: this.acceptedMutationCount,
       acceptedSwapMutationCount: this.acceptedSwapMutationCount,
       acceptedCycleMutationCount: this.acceptedCycleMutationCount,
@@ -1005,6 +1323,19 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       rejectedRerouteDetourCount: this.rejectedRerouteDetourCount,
       rejectedRerouteLayerChangeCount: this.rejectedRerouteLayerChangeCount,
       rejectedReroutePhysicalRiskCount: this.rejectedReroutePhysicalRiskCount,
+      rejectedRerouteEndpointKeepoutCount:
+        this.rejectedRerouteEndpointKeepoutCount,
+      prunedRerouteEndpointKeepoutSegmentCount:
+        this.prunedRerouteEndpointKeepoutSegmentCount,
+      rejectedBoundaryEndpointKeepoutCount:
+        this.rejectedBoundaryEndpointKeepoutCount,
+      terminalKeepoutCount: this.terminalKeepouts.length,
+      terminalKeepoutCellSize: this.terminalKeepoutCellSize,
+      terminalKeepoutBroadPhaseQueryCount:
+        this.terminalKeepoutBroadPhaseQueryCount,
+      terminalKeepoutBroadPhaseCandidateCount:
+        this.terminalKeepoutBroadPhaseCandidateCount,
+      terminalKeepoutExactCheckCount: this.terminalKeepoutExactCheckCount,
       rejectedCrossLayerSwapCount: this.rejectedCrossLayerSwapCount,
       prunedRerouteSearchCount: this.prunedRerouteSearchCount,
       rerouteSearchIterationCount: this.rerouteSearchIterationCount,
@@ -1426,6 +1757,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       return
     }
 
+    if (this.boundaryPermutationViolatesForeignEndpointKeepout(permutation)) {
+      this.rejectedBoundaryEndpointKeepoutCount += 1
+      return
+    }
+
     const region1PhysicalRisks = this.computePhysicalRoutingRisksForRegion(
       this,
       region1Id,
@@ -1661,6 +1997,47 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     return true
   }
 
+  private boundaryPermutationViolatesForeignEndpointKeepout(
+    permutation: BoundaryPermutation,
+  ): boolean {
+    if (!this.hasForeignEndpointKeepouts) return false
+    // A boundary permutation changes chords only in its two incident regions.
+    // Validate those chords incrementally; accepted moves recompute the full
+    // per-pad clearance vector once in applyBoundaryMutation.
+    const affectedRouteIds = new Set(
+      permutation.slots.flatMap(({ routeId }) =>
+        routeId === undefined ? [] : [routeId],
+      ),
+    )
+    const { region1Id, region2Id } = permutation.slots[0]!
+    for (const regionId of [region1Id, region2Id]) {
+      for (const [routeId, storedFromPortId, storedToPortId] of this.state
+        .regionSegments[regionId]!) {
+        if (!affectedRouteIds.has(routeId)) continue
+        const fromPortId = this.remapPortForBoundaryPermutation(
+          routeId,
+          storedFromPortId,
+          permutation,
+        )
+        const toPortId = this.remapPortForBoundaryPermutation(
+          routeId,
+          storedToPortId,
+          permutation,
+        )
+        if (
+          !this.isRouteSegmentAllowedByForeignEndpointKeepouts(
+            routeId,
+            fromPortId,
+            toPortId,
+          )
+        ) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+
   private findBestRerouteMutation(
     swapIncumbentSummary?: UnravelRegionCostSummary,
   ): RerouteMutation | undefined {
@@ -1711,7 +2088,24 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       .slice(0, this.MAX_REROUTE_ROUTES)
 
     const candidateSolver = (this.routeReplacementSolver ??=
-      new SingleRouteReplacementSolver(this, this.REROUTE_MAX_ITERATIONS))
+      new SingleRouteReplacementSolver(
+        this,
+        this.REROUTE_MAX_ITERATIONS,
+        this.hasForeignEndpointKeepouts
+          ? (routeId, fromPortId, toPortId) => {
+              const allowed =
+                this.isRouteSegmentAllowedByForeignEndpointKeepouts(
+                  routeId,
+                  fromPortId,
+                  toPortId,
+                )
+              if (!allowed) {
+                this.prunedRerouteEndpointKeepoutSegmentCount += 1
+              }
+              return allowed
+            }
+          : undefined,
+      ))
     type ScoredRerouteCandidate = {
       mutation?: RerouteMutation
       reusable: boolean
@@ -1749,6 +2143,15 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         return { reusable: false }
       }
 
+      const endpointKeepout = this.replacementViolatesForeignEndpointKeepout(
+        candidateSolver,
+        [routeId],
+      )
+      if (endpointKeepout.violates) {
+        this.rejectedRerouteEndpointKeepoutCount += 1
+        return { reusable: true }
+      }
+
       candidateSolver.rescoreForOptimizer(this)
       const scoredState = this.summarizeReplacementSolverState(candidateSolver)
       const { summary } = scoredState
@@ -1780,6 +2183,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
                 candidateSolver.replacementRouteSegmentLengthByRouteId[
                   routeId
                 ]!,
+              foreignEndpointClearances: endpointKeepout.clearances[0]!,
             },
           ],
           routingRiskByRegion: scoredState.routingRiskByRegion,
@@ -2065,7 +2469,24 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       )
 
     const candidateSolver = (this.routeReplacementSolver ??=
-      new SingleRouteReplacementSolver(this, this.REROUTE_MAX_ITERATIONS))
+      new SingleRouteReplacementSolver(
+        this,
+        this.REROUTE_MAX_ITERATIONS,
+        this.hasForeignEndpointKeepouts
+          ? (routeId, fromPortId, toPortId) => {
+              const allowed =
+                this.isRouteSegmentAllowedByForeignEndpointKeepouts(
+                  routeId,
+                  fromPortId,
+                  toPortId,
+                )
+              if (!allowed) {
+                this.prunedRerouteEndpointKeepoutSegmentCount += 1
+              }
+              return allowed
+            }
+          : undefined,
+      ))
     let bestMutation: RerouteMutation | undefined
 
     const selectBetterMutation = (mutation: RerouteMutation) => {
@@ -2112,6 +2533,15 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         }
       }
 
+      const endpointKeepout = this.replacementViolatesForeignEndpointKeepout(
+        candidateSolver,
+        solveOrder,
+      )
+      if (endpointKeepout.violates) {
+        this.rejectedRerouteEndpointKeepoutCount += 1
+        return
+      }
+
       candidateSolver.rescoreForOptimizer(this)
       const scoredState = this.summarizeReplacementSolverState(candidateSolver)
       const { summary } = scoredState
@@ -2128,12 +2558,13 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         congestionFactor: 0,
         replacementPath: [],
         replacementState: candidateSolver.getReplacementState(),
-        replacementRouteMetrics: solveOrder.map((routeId) => ({
+        replacementRouteMetrics: solveOrder.map((routeId, routeIndex) => ({
           routeId,
           layerChangeCount:
             candidateSolver.replacementRouteLayerChangeCountByRouteId[routeId]!,
           segmentLength:
             candidateSolver.replacementRouteSegmentLengthByRouteId[routeId]!,
+          foreignEndpointClearances: endpointKeepout.clearances[routeIndex]!,
         })),
         routingRiskByRegion: scoredState.routingRiskByRegion,
         segmentRoutingRiskByRegion: scoredState.segmentRoutingRiskByRegion,
@@ -2182,6 +2613,198 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     )
   }
 
+  private queryTerminalKeepoutIndexes(
+    startX: number,
+    startY: number,
+    startZ: number,
+    endX: number,
+    endY: number,
+    endZ: number,
+  ): number[] {
+    if (!this.hasForeignEndpointKeepouts) return []
+    this.terminalKeepoutBroadPhaseQueryCount += 1
+    const minCellX = Math.floor(
+      Math.min(startX, endX) / this.terminalKeepoutCellSize,
+    )
+    const maxCellX = Math.floor(
+      Math.max(startX, endX) / this.terminalKeepoutCellSize,
+    )
+    const minCellY = Math.floor(
+      Math.min(startY, endY) / this.terminalKeepoutCellSize,
+    )
+    const maxCellY = Math.floor(
+      Math.max(startY, endY) / this.terminalKeepoutCellSize,
+    )
+    const keepoutIndexes = new Set<number>()
+    for (let z = Math.min(startZ, endZ); z <= Math.max(startZ, endZ); z++) {
+      for (let cellX = minCellX; cellX <= maxCellX; cellX++) {
+        for (let cellY = minCellY; cellY <= maxCellY; cellY++) {
+          const cellIndexes = this.terminalKeepoutIndexesByCell.get(
+            getTerminalKeepoutCellKey(z, cellX, cellY),
+          )
+          if (!cellIndexes) continue
+          for (const keepoutIndex of cellIndexes) {
+            keepoutIndexes.add(keepoutIndex)
+          }
+        }
+      }
+    }
+    this.terminalKeepoutBroadPhaseCandidateCount += keepoutIndexes.size
+    return [...keepoutIndexes]
+  }
+
+  private computeRouteForeignEndpointClearances(
+    solver: TinyHyperGraphSolver,
+    routeId: RouteId,
+    permutation?: BoundaryPermutation,
+  ): Float64Array {
+    const clearances = new Float64Array(this.terminalKeepouts.length)
+    clearances.fill(Number.POSITIVE_INFINITY)
+    const routeNetId = this.problem.routeNet[routeId]!
+    for (
+      let regionId = 0;
+      regionId < solver.state.regionSegments.length;
+      regionId++
+    ) {
+      for (const [segmentRouteId, storedFromPortId, storedToPortId] of solver
+        .state.regionSegments[regionId]!) {
+        if (segmentRouteId !== routeId) continue
+        const fromPortId = permutation
+          ? this.remapPortForBoundaryPermutation(
+              routeId,
+              storedFromPortId,
+              permutation,
+            )
+          : storedFromPortId
+        const toPortId = permutation
+          ? this.remapPortForBoundaryPermutation(
+              routeId,
+              storedToPortId,
+              permutation,
+            )
+          : storedToPortId
+        const startX = solver.topology.portX[fromPortId]!
+        const startY = solver.topology.portY[fromPortId]!
+        const startZ = solver.topology.portZ[fromPortId]!
+        const endX = solver.topology.portX[toPortId]!
+        const endY = solver.topology.portY[toPortId]!
+        const endZ = solver.topology.portZ[toPortId]!
+        for (const keepoutIndex of this.queryTerminalKeepoutIndexes(
+          startX,
+          startY,
+          startZ,
+          endX,
+          endY,
+          endZ,
+        )) {
+          const keepout = this.terminalKeepouts[keepoutIndex]!
+          if (keepout.netId === routeNetId) continue
+          this.terminalKeepoutExactCheckCount += 1
+          clearances[keepoutIndex] = Math.min(
+            clearances[keepoutIndex]!,
+            getSegmentToTerminalKeepoutClearance({
+              startX,
+              startY,
+              startZ,
+              endX,
+              endY,
+              endZ,
+              keepout,
+            }),
+          )
+        }
+      }
+    }
+    return clearances
+  }
+
+  private isRouteSegmentAllowedByForeignEndpointKeepouts(
+    routeId: RouteId,
+    fromPortId: PortId,
+    toPortId: PortId,
+  ): boolean {
+    if (!this.hasForeignEndpointKeepouts) return true
+    const baselineClearances =
+      this.routeForeignEndpointClearancesByRouteId[routeId]!
+    const routeNetId = this.problem.routeNet[routeId]!
+    const startX = this.topology.portX[fromPortId]!
+    const startY = this.topology.portY[fromPortId]!
+    const startZ = this.topology.portZ[fromPortId]!
+    const endX = this.topology.portX[toPortId]!
+    const endY = this.topology.portY[toPortId]!
+    const endZ = this.topology.portZ[toPortId]!
+    for (const keepoutIndex of this.queryTerminalKeepoutIndexes(
+      startX,
+      startY,
+      startZ,
+      endX,
+      endY,
+      endZ,
+    )) {
+      const keepout = this.terminalKeepouts[keepoutIndex]!
+      if (keepout.netId === routeNetId) continue
+      this.terminalKeepoutExactCheckCount += 1
+      const clearance = getSegmentToTerminalKeepoutClearance({
+        startX,
+        startY,
+        startZ,
+        endX,
+        endY,
+        endZ,
+        keepout,
+      })
+      if (
+        clearance + COST_EPSILON <
+        Math.min(0, baselineClearances[keepoutIndex]!)
+      ) {
+        return false
+      }
+    }
+    return true
+  }
+
+  private getMinimumForeignEndpointClearance(): number {
+    let minimumClearance = Number.POSITIVE_INFINITY
+    for (const routeClearances of this
+      .routeForeignEndpointClearancesByRouteId) {
+      for (const clearance of routeClearances) {
+        minimumClearance = Math.min(minimumClearance, clearance)
+      }
+    }
+    return minimumClearance
+  }
+
+  private replacementViolatesForeignEndpointKeepout(
+    solver: TinyHyperGraphSolver,
+    routeIds: readonly RouteId[],
+    permutation?: BoundaryPermutation,
+  ): { violates: boolean; clearances: Float64Array[] } {
+    const clearances = routeIds.map((routeId) =>
+      this.computeRouteForeignEndpointClearances(solver, routeId, permutation),
+    )
+    return {
+      violates: routeIds.some((routeId, routeIndex) => {
+        const candidateClearances = clearances[routeIndex]!
+        const currentClearances =
+          this.routeForeignEndpointClearancesByRouteId[routeId]!
+        for (
+          let keepoutIndex = 0;
+          keepoutIndex < candidateClearances.length;
+          keepoutIndex++
+        ) {
+          if (
+            candidateClearances[keepoutIndex]! + COST_EPSILON <
+            Math.min(0, currentClearances[keepoutIndex]!)
+          ) {
+            return true
+          }
+        }
+        return false
+      }),
+      clearances,
+    }
+  }
+
   private recomputeRouteMetrics(routeIds: readonly RouteId[]) {
     const routeIdSet = new Set(routeIds)
     for (const routeId of routeIdSet) {
@@ -2200,6 +2823,10 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
           toPortId,
         )
       }
+    }
+    for (const routeId of routeIdSet) {
+      this.routeForeignEndpointClearancesByRouteId[routeId] =
+        this.computeRouteForeignEndpointClearances(this, routeId)
     }
   }
 
@@ -2714,9 +3341,12 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       routeId,
       layerChangeCount,
       segmentLength,
+      foreignEndpointClearances,
     } of mutation.replacementRouteMetrics) {
       this.routeLayerChangeCountByRouteId[routeId] = layerChangeCount
       this.routeSegmentLengthByRouteId[routeId] = segmentLength
+      this.routeForeignEndpointClearancesByRouteId[routeId] =
+        foreignEndpointClearances
     }
   }
 
@@ -2768,6 +3398,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       finalMaxRegionCost: this.currentSummary.maxRegionCost,
       finalTotalRegionCost: this.currentSummary.totalRegionCost,
       finalTotalSegmentLength: this.currentSummary.totalSegmentLength,
+      finalMinForeignEndpointClearance:
+        this.getMinimumForeignEndpointClearance(),
       acceptedMutationCount: this.acceptedMutationCount,
       acceptedSwapMutationCount: this.acceptedSwapMutationCount,
       acceptedCycleMutationCount: this.acceptedCycleMutationCount,
@@ -2777,6 +3409,19 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       rejectedRerouteDetourCount: this.rejectedRerouteDetourCount,
       rejectedRerouteLayerChangeCount: this.rejectedRerouteLayerChangeCount,
       rejectedReroutePhysicalRiskCount: this.rejectedReroutePhysicalRiskCount,
+      rejectedRerouteEndpointKeepoutCount:
+        this.rejectedRerouteEndpointKeepoutCount,
+      prunedRerouteEndpointKeepoutSegmentCount:
+        this.prunedRerouteEndpointKeepoutSegmentCount,
+      rejectedBoundaryEndpointKeepoutCount:
+        this.rejectedBoundaryEndpointKeepoutCount,
+      terminalKeepoutCount: this.terminalKeepouts.length,
+      terminalKeepoutCellSize: this.terminalKeepoutCellSize,
+      terminalKeepoutBroadPhaseQueryCount:
+        this.terminalKeepoutBroadPhaseQueryCount,
+      terminalKeepoutBroadPhaseCandidateCount:
+        this.terminalKeepoutBroadPhaseCandidateCount,
+      terminalKeepoutExactCheckCount: this.terminalKeepoutExactCheckCount,
       rejectedCrossLayerSwapCount: this.rejectedCrossLayerSwapCount,
       prunedRerouteSearchCount: this.prunedRerouteSearchCount,
       rerouteSearchIterationCount: this.rerouteSearchIterationCount,

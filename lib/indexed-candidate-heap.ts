@@ -27,7 +27,6 @@ export class IndexedCandidateHeap {
   constructor(
     private readonly regionCount: number,
     private readonly compactHopIndex?: CompactCandidateHopIndex,
-    private readonly closeDequeuedHops = true,
   ) {
     if (compactHopIndex) {
       this.hopStateGeneration = new Uint32Array(compactHopIndex.hopCapacity)
@@ -89,11 +88,7 @@ export class IndexedCandidateHeap {
     if (!bestCandidate) return undefined
 
     const bestHopId = this.getHopId(bestCandidate)
-    if (this.closeDequeuedHops) {
-      this.closeHop(bestHopId)
-    } else {
-      this.releaseHop(bestHopId)
-    }
+    this.closeHop(bestHopId)
 
     const lastCandidate = this.items.pop()!
     if (this.items.length > 0) {
@@ -139,7 +134,6 @@ export class IndexedCandidateHeap {
   }
 
   private isHopClosed(hopId: number): boolean {
-    if (!this.closeDequeuedHops) return false
     if (
       hopId >= 0 &&
       this.hopStateGeneration?.[hopId] === this.currentHopStateGeneration
@@ -147,15 +141,6 @@ export class IndexedCandidateHeap {
       return this.hopIndexOrClosed![hopId] === -1
     }
     return this.closedHopIds.has(hopId)
-  }
-
-  private releaseHop(hopId: number): void {
-    if (hopId >= 0 && this.hopStateGeneration) {
-      this.hopStateGeneration[hopId] = this.currentHopStateGeneration
-      this.hopIndexOrClosed![hopId] = -2
-      return
-    }
-    this.indexByHopId.delete(hopId)
   }
 
   private setQueuedHopIndex(hopId: number, index: number): void {

@@ -369,6 +369,41 @@ test("unravel solver accepts only beneficial boundary mutations", () => {
   )
 })
 
+test("tracks terminal keepout clearance per obstacle when scoring swaps", () => {
+  const inputSolver = createCrossedSolvedSolver()
+  inputSolver.topology.portMetadata = Array.from({ length: 6 }, () => ({}))
+  inputSolver.topology.portMetadata[1] = {
+    _tinyTerminalKeepouts: [
+      {
+        minX: -1.05,
+        minY: 0.95,
+        maxX: -0.95,
+        maxY: 1.05,
+        z: 0,
+        traceCenterClearance: 0.05,
+      },
+      {
+        minX: -0.05,
+        minY: 0.95,
+        maxX: 0.05,
+        maxY: 1.05,
+        z: 0,
+        traceCenterClearance: 0.05,
+      },
+    ],
+  }
+  const initialMaxRegionCost = getMaxRegionCost(inputSolver)
+  const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
+    MAX_HOT_REGIONS: 0,
+  })
+
+  solver.solve()
+
+  expect(getMaxRegionCost(solver)).toBe(initialMaxRegionCost)
+  expect(solver.stats.acceptedMutationCount).toBe(0)
+  expect(solver.stats.rejectedBoundaryEndpointKeepoutCount).toBeGreaterThan(0)
+})
+
 test("routing-complexity swaps preserve each route's layer-change count", () => {
   const inputSolver = createCrossedSolvedSolver(
     new Int32Array([0, 0, 0, 1, 0, 0]),
@@ -464,6 +499,44 @@ test("unravel solver replaces a route through the hottest region", () => {
     solution,
   ).baselineSolver
   expect(getMaxRegionCost(replaySolver)).toBe(getMaxRegionCost(solver))
+})
+
+test("reroute search explores around terminal keepouts instead of accepting an unsafe path", () => {
+  const inputSolver = createSolvedSolverWithAlternatePath()
+  inputSolver.topology.portX.set([
+    -2, -1, 1, -1, 0, 1, 2, 0, 0, 0, 0, -0.5, 0.5,
+  ])
+  inputSolver.topology.portY.set([0, 0, 0, 1, 1, 1, 0, -1, -0.5, 0.5, 1, 1, 1])
+  inputSolver.topology.portMetadata = Array.from({ length: 13 }, () => ({}))
+  inputSolver.topology.portMetadata[7] = {
+    _tinyTerminalKeepouts: [
+      {
+        minX: -0.1,
+        minY: 0.9,
+        maxX: 0.1,
+        maxY: 1.1,
+        z: 0,
+        traceCenterClearance: 0.05,
+        viaCenterClearance: 0.1,
+      },
+    ],
+  }
+  const initialMaxRegionCost = getMaxRegionCost(inputSolver)
+  const solver = new UnravelTinyHyperGraphSolver(inputSolver, {
+    MAX_MUTATIONS: 1,
+    MAX_HOT_REGIONS: 1,
+    REROUTE_CONGESTION_FACTORS: [0],
+    MAX_REROUTE_SEGMENT_INCREASE: 10,
+  })
+
+  solver.solve()
+
+  expect(getMaxRegionCost(solver)).toBe(initialMaxRegionCost)
+  expect(solver.stats.acceptedMutationCount).toBe(0)
+  expect(solver.stats.prunedRerouteEndpointKeepoutSegmentCount).toBeGreaterThan(
+    0,
+  )
+  expect(solver.stats.rejectedRerouteEndpointKeepoutCount).toBe(0)
 })
 
 test("unravel solver reuses valid paths before repeating graph-wide A*", () => {
