@@ -539,6 +539,8 @@ test("unravel solver replaces a route through the hottest region", () => {
   expect(getMaxRegionCost(inputSolver)).toBeGreaterThan(0)
   expect(getMaxRegionCost(solver)).toBe(0)
   expect(solver.stats.lastMutationKind).toBe("reroute")
+  expect(solver.stats.acceptedPairRerouteMutationCount).toBe(0)
+  expect(solver.stats.pairRerouteSearchCount).toBe(0)
   expect(solver.stats.finalMaxRoutingRisk).toBeLessThanOrEqual(
     solver.stats.initialMaxRoutingRisk,
   )

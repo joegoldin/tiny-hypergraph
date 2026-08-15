@@ -239,6 +239,8 @@ interface UnravelRegionCostSummary extends RegionCostSummary {
   totalRoutingRisk: number
   /** Worst risk when every routed segment is retained as a physical chord. */
   maxSegmentRoutingRisk: number
+  squaredSegmentRoutingRisk: number
+  totalSegmentRoutingRisk: number
   /** Exact via-demand risk used by the downstream high-density router. */
   maxDownstreamRisk: number
   squaredDownstreamRisk: number
@@ -265,11 +267,13 @@ interface BoundaryMutation {
   region2DownstreamRisk: number
   region1SegmentLength: number
   region2SegmentLength: number
+  fixedAnchorPortIds: PortId[]
   summary: UnravelRegionCostSummary
 }
 
 interface BoundaryScoringContext {
   squaredRoutingRiskByRegion: Float64Array
+  squaredSegmentRoutingRiskByRegion: Float64Array
   squaredDownstreamRiskByRegion: Float64Array
   getUnaffectedMaxRegionCost: (
     region1Id: RegionId,
@@ -333,6 +337,15 @@ interface CachedReroutePath {
   routeId: RouteId
   congestionFactor: number
   replacementPath: ReplacementPathSegment[]
+}
+
+interface AcceptedRerouteMutation {
+  routeIds: RouteId[]
+  previousPaths: Array<{
+    routeId: RouteId
+    path: ReplacementPathSegment[]
+  }>
+  reverted: boolean
 }
 
 export interface UnravelTinyHyperGraphSolverOptions
@@ -468,6 +481,10 @@ const isParetoImprovement = (
     candidate.maxRoutingRisk < current.maxRoutingRisk - COST_EPSILON ||
     candidate.squaredRoutingRisk < current.squaredRoutingRisk - COST_EPSILON ||
     candidate.totalRoutingRisk < current.totalRoutingRisk - COST_EPSILON ||
+    candidate.squaredSegmentRoutingRisk <
+      current.squaredSegmentRoutingRisk - COST_EPSILON ||
+    candidate.totalSegmentRoutingRisk <
+      current.totalSegmentRoutingRisk - COST_EPSILON ||
     candidate.maxDownstreamRisk < current.maxDownstreamRisk - COST_EPSILON ||
     candidate.squaredDownstreamRisk <
       current.squaredDownstreamRisk - COST_EPSILON ||
@@ -497,7 +514,9 @@ const isRoutingRiskNoWorse = (
  * transition count. Capacity-aware maxima may never regress from the current
  * state. Exact downstream via-demand may redistribute between regions during
  * an untwist sequence, but all of its aggregate metrics must remain inside
- * the solved input's feasibility envelope.
+ * the solved input's feasibility envelope. A strict peak reduction may spend
+ * wirelength to remove the bottleneck; peak-preserving cleanup must not make
+ * the detailed-routing geometry longer.
  */
 const isSwapParetoImprovement = (
   candidate: UnravelRegionCostSummary,
@@ -1354,8 +1373,8 @@ class SingleRouteReplacementSolver extends TinyHyperGraphSolver {
  * chains. Boundary mutations change both sides together, and replacement
  * candidates retain every route outside their exact ejection set. Peak-cost
  * reductions are accepted only when downstream routing risk does not worsen;
- * moves on a peak plateau must improve the remaining physical objectives
- * without worsening any of them.
+ * plateau moves may form a temporary ejection chain, which is relinked toward
+ * the solved input after the final peak has been established.
  */
 export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   MAX_MUTATIONS = Number.POSITIVE_INFINITY
@@ -1404,6 +1423,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   pairRerouteFailedSearchIterationCount = 0
   pairRerouteFailedSearchCount = 0
   reusedRerouteCandidateCount = 0
+  revertedBoundaryMutationCount = 0
+  revertedRerouteMutationCount = 0
   readonly fixedRouteCount: number
 
   private readonly endpointPortMask: Int8Array
@@ -1434,6 +1455,9 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   private segmentLengthByRegion: Float64Array
   private routeReplacementSolver?: SingleRouteReplacementSolver
   private pendingReroutePaths: CachedReroutePath[] = []
+  private readonly acceptedBoundaryMutations: BoundaryMutation[] = []
+  private readonly revertedBoundaryMutations = new Set<BoundaryMutation>()
+  private readonly acceptedRerouteMutations: AcceptedRerouteMutation[] = []
   private readonly rerouteBlockingRouteIdsByRouteId = new Map<
     RouteId,
     RouteId[]
@@ -1788,6 +1812,9 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       initialTotalSegmentLength: this.initialSummary.totalSegmentLength,
       initialMaxRoutingRisk: this.initialSummary.maxRoutingRisk,
       initialTotalRoutingRisk: this.initialSummary.totalRoutingRisk,
+      initialMaxSegmentRoutingRisk: this.initialSummary.maxSegmentRoutingRisk,
+      initialTotalSegmentRoutingRisk:
+        this.initialSummary.totalSegmentRoutingRisk,
       initialMaxDownstreamRisk: this.initialSummary.maxDownstreamRisk,
       initialTotalDownstreamRisk: this.initialSummary.totalDownstreamRisk,
       initialMinForeignEndpointClearance:
@@ -1798,6 +1825,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       finalTotalSegmentLength: this.currentSummary.totalSegmentLength,
       finalMaxRoutingRisk: this.currentSummary.maxRoutingRisk,
       finalTotalRoutingRisk: this.currentSummary.totalRoutingRisk,
+      finalMaxSegmentRoutingRisk: this.currentSummary.maxSegmentRoutingRisk,
+      finalTotalSegmentRoutingRisk: this.currentSummary.totalSegmentRoutingRisk,
       finalMaxDownstreamRisk: this.currentSummary.maxDownstreamRisk,
       finalTotalDownstreamRisk: this.currentSummary.totalDownstreamRisk,
       finalMinForeignEndpointClearance:
@@ -1846,6 +1875,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       pairRerouteFailedSearchIterationCount: 0,
       pairRerouteFailedSearchCount: 0,
       reusedRerouteCandidateCount: 0,
+      revertedBoundaryMutationCount: 0,
+      revertedRerouteMutationCount: 0,
     }
 
     if (this.MAX_MUTATIONS === 0) {
@@ -1877,10 +1908,14 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
           this.optimizationPhase = "final_untwist"
           continue
         }
-        const singleRouteMutation = this.findBestRerouteMutation()
-        mutation =
-          this.findBestPairRerouteMutation(singleRouteMutation?.summary) ??
-          singleRouteMutation
+        // Follow first-order descent to a one-route local optimum before
+        // opening the much larger pair-ejection neighborhood. A paired search
+        // is a repair mechanism for dependencies that no single replacement
+        // can escape; running it as a portfolio against every available
+        // single replacement repeats quadratic work that the next locally
+        // untwisted state may make irrelevant.
+        mutation = this.findBestRerouteMutation()
+        mutation ??= this.findBestPairRerouteMutation()
         if (!mutation) this.optimizationPhase = "final_untwist"
         continue
       }
@@ -1895,6 +1930,14 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     }
 
     if (mutation.kind === "reroute") {
+      this.acceptedRerouteMutations.push({
+        routeIds: [...mutation.routeIds],
+        previousPaths: mutation.routeIds.map((routeId) => ({
+          routeId,
+          path: this.getRoutePath(routeId),
+        })),
+        reverted: false,
+      })
       this.applyRerouteMutation(mutation)
       this.acceptedRerouteMutationCount += 1
       if (mutation.routeIds.length === 2) {
@@ -1903,6 +1946,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       this.optimizationPhase = "initial_untwist"
     } else {
       this.applyBoundaryMutation(mutation)
+      this.acceptedBoundaryMutations.push(mutation)
       if (mutation.kind === "swap") {
         this.acceptedSwapMutationCount += 1
       } else {
@@ -1919,6 +1963,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       finalTotalSegmentLength: this.currentSummary.totalSegmentLength,
       finalMaxRoutingRisk: this.currentSummary.maxRoutingRisk,
       finalTotalRoutingRisk: this.currentSummary.totalRoutingRisk,
+      finalMaxSegmentRoutingRisk: this.currentSummary.maxSegmentRoutingRisk,
+      finalTotalSegmentRoutingRisk: this.currentSummary.totalSegmentRoutingRisk,
       finalMaxDownstreamRisk: this.currentSummary.maxDownstreamRisk,
       finalTotalDownstreamRisk: this.currentSummary.totalDownstreamRisk,
       finalMinForeignEndpointClearance:
@@ -1976,6 +2022,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         this.pairRerouteFailedSearchIterationCount,
       pairRerouteFailedSearchCount: this.pairRerouteFailedSearchCount,
       reusedRerouteCandidateCount: this.reusedRerouteCandidateCount,
+      revertedBoundaryMutationCount: this.revertedBoundaryMutationCount,
+      revertedRerouteMutationCount: this.revertedRerouteMutationCount,
       lastMutationKind: mutation.kind,
       ...(mutation.kind === "reroute"
         ? {
@@ -2414,6 +2462,10 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         routingRiskByRegion,
         (routingRisk) => routingRisk * routingRisk,
       ),
+      squaredSegmentRoutingRiskByRegion: Float64Array.from(
+        segmentRoutingRiskByRegion,
+        (routingRisk) => routingRisk * routingRisk,
+      ),
       squaredDownstreamRiskByRegion: Float64Array.from(
         downstreamRiskByRegion,
         (downstreamRisk) => downstreamRisk * downstreamRisk,
@@ -2540,6 +2592,18 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         region1PhysicalRisks.segmentRisk,
         region2PhysicalRisks.segmentRisk,
       ),
+      squaredSegmentRoutingRisk:
+        this.currentSummary.squaredSegmentRoutingRisk -
+        context.squaredSegmentRoutingRiskByRegion[region1Id]! -
+        context.squaredSegmentRoutingRiskByRegion[region2Id]! +
+        region1PhysicalRisks.segmentRisk ** 2 +
+        region2PhysicalRisks.segmentRisk ** 2,
+      totalSegmentRoutingRisk:
+        this.currentSummary.totalSegmentRoutingRisk -
+        this.segmentRoutingRiskByRegion[region1Id]! -
+        this.segmentRoutingRiskByRegion[region2Id]! +
+        region1PhysicalRisks.segmentRisk +
+        region2PhysicalRisks.segmentRisk,
       squaredRoutingRisk:
         this.currentSummary.squaredRoutingRisk -
         context.squaredRoutingRiskByRegion[region1Id]! -
@@ -2601,6 +2665,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       region2DownstreamRisk: region2PhysicalRisks.downstreamRisk,
       region1SegmentLength: region1PrimaryMetrics.segmentLength,
       region2SegmentLength: region2PrimaryMetrics.segmentLength,
+      fixedAnchorPortIds: [...fixedAnchorPortIds],
       summary,
     }
   }
@@ -3293,6 +3358,11 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   private findBestPairRerouteMutation(
     incumbentSummary?: UnravelRegionCostSummary,
   ): RerouteMutation | undefined {
+    // There is no strict region-cost improvement below the zero floor. In
+    // particular, treating every zero-cost region as a tied peak would turn a
+    // solved bottleneck into a needless whole-graph pair search.
+    if (this.currentSummary.maxRegionCost <= COST_EPSILON) return
+
     const peakRegionIds = this.state.regionIntersectionCaches.flatMap(
       (cache, regionId) =>
         Math.abs(
@@ -4092,6 +4162,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     let squaredRoutingRisk = 0
     let totalRoutingRisk = 0
     let maxSegmentRoutingRisk = 0
+    let squaredSegmentRoutingRisk = 0
+    let totalSegmentRoutingRisk = 0
     let maxDownstreamRisk = 0
     let squaredDownstreamRisk = 0
     let totalDownstreamRisk = 0
@@ -4146,6 +4218,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       squaredRoutingRisk += routingRisk * routingRisk
       totalRoutingRisk += routingRisk
       maxSegmentRoutingRisk = Math.max(maxSegmentRoutingRisk, segmentRisk)
+      squaredSegmentRoutingRisk += segmentRisk * segmentRisk
+      totalSegmentRoutingRisk += segmentRisk
       maxDownstreamRisk = Math.max(maxDownstreamRisk, downstreamRisk)
       squaredDownstreamRisk += downstreamRisk * downstreamRisk
       totalDownstreamRisk += downstreamRisk
@@ -4161,6 +4235,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         squaredRoutingRisk,
         totalRoutingRisk,
         maxSegmentRoutingRisk,
+        squaredSegmentRoutingRisk,
+        totalSegmentRoutingRisk,
         maxDownstreamRisk,
         squaredDownstreamRisk,
         totalDownstreamRisk,
@@ -4210,6 +4286,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     let squaredRoutingRisk = 0
     let totalRoutingRisk = 0
     let maxSegmentRoutingRisk = 0
+    let squaredSegmentRoutingRisk = 0
+    let totalSegmentRoutingRisk = 0
     let maxDownstreamRisk = 0
     let squaredDownstreamRisk = 0
     let totalDownstreamRisk = 0
@@ -4239,6 +4317,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         maxSegmentRoutingRisk,
         segmentRoutingRiskByRegion[regionId]!,
       )
+      squaredSegmentRoutingRisk += segmentRoutingRiskByRegion[regionId]! ** 2
+      totalSegmentRoutingRisk += segmentRoutingRiskByRegion[regionId]!
       maxDownstreamRisk = Math.max(maxDownstreamRisk, downstreamRisk)
       squaredDownstreamRisk += downstreamRisk * downstreamRisk
       totalDownstreamRisk += downstreamRisk
@@ -4255,6 +4335,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         squaredRoutingRisk,
         totalRoutingRisk,
         maxSegmentRoutingRisk,
+        squaredSegmentRoutingRisk,
+        totalSegmentRoutingRisk,
         maxDownstreamRisk,
         squaredDownstreamRisk,
         totalDownstreamRisk,
@@ -4282,6 +4364,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     let squaredRoutingRisk = 0
     let totalRoutingRisk = 0
     let maxSegmentRoutingRisk = 0
+    let squaredSegmentRoutingRisk = 0
+    let totalSegmentRoutingRisk = 0
     let maxDownstreamRisk = 0
     let squaredDownstreamRisk = 0
     let totalDownstreamRisk = 0
@@ -4316,6 +4400,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         maxSegmentRoutingRisk,
         regionMetrics.segmentRoutingRisk,
       )
+      squaredSegmentRoutingRisk += regionMetrics.segmentRoutingRisk ** 2
+      totalSegmentRoutingRisk += regionMetrics.segmentRoutingRisk
       maxDownstreamRisk = Math.max(
         maxDownstreamRisk,
         regionMetrics.downstreamRisk,
@@ -4339,6 +4425,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       squaredRoutingRisk,
       totalRoutingRisk,
       maxSegmentRoutingRisk,
+      squaredSegmentRoutingRisk,
+      totalSegmentRoutingRisk,
       maxDownstreamRisk,
       squaredDownstreamRisk,
       totalDownstreamRisk,
@@ -4454,20 +4542,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     // coordinates. Carry them through the same atomic permutation so they
     // remain candidates after the untwist descent. Every transformed path is
     // still ownership-validated and fully rescored before use.
-    for (const cachedPath of this.pendingReroutePaths) {
-      for (const segment of cachedPath.replacementPath) {
-        segment.fromPortId = this.remapPortForBoundaryPermutation(
-          cachedPath.routeId,
-          segment.fromPortId,
-          mutation.permutation,
-        )
-        segment.toPortId = this.remapPortForBoundaryPermutation(
-          cachedPath.routeId,
-          segment.toPortId,
-          mutation.permutation,
-        )
-      }
-    }
+    this.remapStoredReroutePaths(mutation.permutation)
 
     for (const regionId of [mutation.region1Id, mutation.region2Id]) {
       for (const segment of this.state.regionSegments[regionId]!) {
@@ -4511,6 +4586,54 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     this.recomputeRouteMetrics(
       mutation.permutation.slots.flatMap(({ routeId }) =>
         routeId === undefined ? [] : [routeId],
+      ),
+    )
+  }
+
+  private remapReroutePath(
+    routeId: RouteId,
+    path: ReplacementPathSegment[],
+    permutation: BoundaryPermutation,
+  ) {
+    for (const segment of path) {
+      segment.fromPortId = this.remapPortForBoundaryPermutation(
+        routeId,
+        segment.fromPortId,
+        permutation,
+      )
+      segment.toPortId = this.remapPortForBoundaryPermutation(
+        routeId,
+        segment.toPortId,
+        permutation,
+      )
+    }
+  }
+
+  private remapStoredReroutePaths(permutation: BoundaryPermutation) {
+    for (const cachedPath of this.pendingReroutePaths) {
+      this.remapReroutePath(
+        cachedPath.routeId,
+        cachedPath.replacementPath,
+        permutation,
+      )
+    }
+    for (const acceptedMutation of this.acceptedRerouteMutations) {
+      for (const previousPath of acceptedMutation.previousPaths) {
+        this.remapReroutePath(
+          previousPath.routeId,
+          previousPath.path,
+          permutation,
+        )
+      }
+    }
+  }
+
+  private getRoutePath(routeId: RouteId): ReplacementPathSegment[] {
+    return this.state.regionSegments.flatMap((segments, regionId) =>
+      segments.flatMap(([candidateRouteId, fromPortId, toPortId]) =>
+        candidateRouteId === routeId
+          ? [{ regionId, fromPortId, toPortId }]
+          : [],
       ),
     )
   }
@@ -4573,6 +4696,264 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     this.state.currentRouteNetId = undefined
   }
 
+  private isPathRelinkingCandidateAllowed(
+    summary: UnravelRegionCostSummary,
+    achievedMaxRegionCost: number,
+  ) {
+    return (
+      summary.maxRegionCost <= achievedMaxRegionCost + COST_EPSILON &&
+      summary.totalRegionCost <=
+        this.initialSummary.totalRegionCost + COST_EPSILON &&
+      summary.maxRegionSegmentCount <=
+        this.currentSummary.maxRegionSegmentCount &&
+      summary.squaredRegionSegmentCount <=
+        this.currentSummary.squaredRegionSegmentCount &&
+      summary.totalSegmentLength <=
+        this.currentSummary.totalSegmentLength + COST_EPSILON &&
+      isRoutingRiskNoWorse(summary, this.initialSummary, this.initialSummary) &&
+      summary.squaredSegmentRoutingRisk <=
+        this.initialSummary.squaredSegmentRoutingRisk + COST_EPSILON &&
+      summary.totalSegmentRoutingRisk <=
+        this.initialSummary.totalSegmentRoutingRisk + COST_EPSILON
+    )
+  }
+
+  /**
+   * Plateau untwists are useful as temporary ejection-chain moves, but a
+   * solved chain should not retain every intermediate lane displacement. Walk
+   * the accepted boundary history backwards and remove a permutation when the
+   * achieved peak is preserved, wirelength does not increase, and all physical
+   * metrics remain inside the original solved state's feasibility envelope.
+   */
+  private removeRedundantBoundaryMutations(achievedMaxRegionCost: number) {
+    for (
+      let mutationIndex = this.acceptedBoundaryMutations.length - 1;
+      mutationIndex >= 0;
+      mutationIndex--
+    ) {
+      const mutation = this.acceptedBoundaryMutations[mutationIndex]!
+      if (this.revertedBoundaryMutations.has(mutation)) continue
+      const inversePermutation: BoundaryPermutation = {
+        slots: mutation.permutation.slots.map((slot, index) => ({
+          ...slot,
+          portId: mutation.permutation.destinationPortIds[index]!,
+        })),
+        destinationPortIds: mutation.permutation.slots.map(
+          ({ portId }) => portId,
+        ),
+      }
+      const sourcePortIds = new Set(
+        mutation.permutation.slots.map(({ portId }) => portId),
+      )
+      if (
+        sourcePortIds.size !== inversePermutation.destinationPortIds.length ||
+        inversePermutation.destinationPortIds.some(
+          (portId) => !mutation.permutation.destinationPortIds.includes(portId),
+        )
+      ) {
+        continue
+      }
+
+      const regionIds = [mutation.region1Id, mutation.region2Id]
+      const stillApplied = inversePermutation.slots.every((slot) => {
+        const expectedNetId =
+          slot.routeId === undefined ? -1 : this.problem.routeNet[slot.routeId]!
+        if (this.state.portAssignment[slot.portId] !== expectedNetId) {
+          return false
+        }
+        return regionIds.every((regionId) => {
+          const occurrences = this.state.regionSegments[regionId]!.filter(
+            ([routeId, fromPortId, toPortId]) =>
+              (fromPortId === slot.portId || toPortId === slot.portId) &&
+              (slot.routeId === undefined || routeId === slot.routeId),
+          )
+          return slot.routeId === undefined
+            ? occurrences.length === 0
+            : occurrences.length === 1
+        })
+      })
+      if (!stillApplied) continue
+      if (
+        !this.preservesFixedBoundaryOrder(
+          inversePermutation,
+          mutation.fixedAnchorPortIds,
+        ) ||
+        (this.REGION_COST_MODEL === "routing-complexity" &&
+          !this.preservesRouteLayerChangeCountsAfterPermutation(
+            inversePermutation,
+          )) ||
+        this.boundaryPermutationViolatesForeignEndpointKeepout(
+          inversePermutation,
+        )
+      ) {
+        continue
+      }
+
+      const savedRegionSegments = regionIds.map((regionId) =>
+        this.state.regionSegments[regionId]!.map(
+          ([routeId, fromPortId, toPortId]) =>
+            [routeId, fromPortId, toPortId] as [RouteId, PortId, PortId],
+        ),
+      )
+      const boundaryPortIds = mutation.permutation.slots.map(
+        ({ portId }) => portId,
+      )
+      const savedPortAssignments = boundaryPortIds.map(
+        (portId) => this.state.portAssignment[portId]!,
+      )
+
+      for (const regionId of regionIds) {
+        for (const segment of this.state.regionSegments[regionId]!) {
+          segment[1] = this.remapPortForBoundaryPermutation(
+            segment[0],
+            segment[1],
+            inversePermutation,
+          )
+          segment[2] = this.remapPortForBoundaryPermutation(
+            segment[0],
+            segment[2],
+            inversePermutation,
+          )
+        }
+      }
+      for (let index = 0; index < inversePermutation.slots.length; index++) {
+        const source = inversePermutation.slots[index]!
+        const destinationPortId = inversePermutation.destinationPortIds[index]!
+        this.state.portAssignment[destinationPortId] =
+          source.routeId === undefined
+            ? -1
+            : this.problem.routeNet[source.routeId]!
+      }
+      for (const regionId of regionIds) this.rebuildRegionCache(regionId)
+
+      const candidate = this.summarizeSolverState(this)
+      const summary = candidate.summary
+      if (
+        this.isPathRelinkingCandidateAllowed(summary, achievedMaxRegionCost)
+      ) {
+        this.currentSummary = summary
+        this.routingRiskByRegion.set(candidate.routingRiskByRegion)
+        this.segmentRoutingRiskByRegion.set(
+          candidate.segmentRoutingRiskByRegion,
+        )
+        this.downstreamRiskByRegion.set(candidate.downstreamRiskByRegion)
+        this.segmentLengthByRegion.set(candidate.segmentLengthByRegion)
+        this.recomputeRouteMetrics(
+          inversePermutation.slots.flatMap(({ routeId }) =>
+            routeId === undefined ? [] : [routeId],
+          ),
+        )
+        this.remapStoredReroutePaths(inversePermutation)
+        this.revertedBoundaryMutations.add(mutation)
+        this.revertedBoundaryMutationCount += 1
+        continue
+      }
+
+      for (let regionIndex = 0; regionIndex < regionIds.length; regionIndex++) {
+        this.state.regionSegments[regionIds[regionIndex]!] =
+          savedRegionSegments[regionIndex]!
+        this.rebuildRegionCache(regionIds[regionIndex]!)
+      }
+      for (let index = 0; index < boundaryPortIds.length; index++) {
+        this.state.portAssignment[boundaryPortIds[index]!] =
+          savedPortAssignments[index]!
+      }
+    }
+  }
+
+  /**
+   * A peak-reducing route replacement can make an earlier replacement
+   * unnecessary. Relink the final solution toward the solved input by
+   * restoring accepted paths in reverse order whenever the achieved peak is
+   * unchanged. The rollback may not add segments, transitions, wirelength, or
+   * physical risk beyond the solved-input envelope.
+   */
+  private removeRedundantRerouteMutations(achievedMaxRegionCost: number) {
+    const candidateSolver = this.routeReplacementSolver
+    if (!candidateSolver) return
+
+    for (
+      let mutationIndex = this.acceptedRerouteMutations.length - 1;
+      mutationIndex >= 0;
+      mutationIndex--
+    ) {
+      const acceptedMutation = this.acceptedRerouteMutations[mutationIndex]!
+      if (acceptedMutation.reverted) continue
+
+      const currentPaths = acceptedMutation.routeIds.map((routeId) =>
+        this.getRoutePath(routeId),
+      )
+      const previousSegmentCount = acceptedMutation.previousPaths.reduce(
+        (count, { path }) => count + path.length,
+        0,
+      )
+      const currentSegmentCount = currentPaths.reduce(
+        (count, path) => count + path.length,
+        0,
+      )
+      if (previousSegmentCount > currentSegmentCount) continue
+
+      const addsLayerChanges = acceptedMutation.previousPaths.some(
+        ({ routeId, path }) =>
+          path.filter(
+            ({ fromPortId, toPortId }) =>
+              this.topology.portZ[fromPortId] !== this.topology.portZ[toPortId],
+          ).length > this.routeLayerChangeCountByRouteId[routeId]!,
+      )
+      if (addsLayerChanges) continue
+
+      if (
+        !candidateSolver.loadReplacementPaths(
+          this,
+          acceptedMutation.previousPaths,
+          0,
+        )
+      ) {
+        continue
+      }
+      const endpointKeepout = this.replacementViolatesForeignEndpointKeepout(
+        candidateSolver,
+        acceptedMutation.routeIds,
+      )
+      if (endpointKeepout.violates) continue
+
+      candidateSolver.rescoreForOptimizer(this)
+      const candidate = this.summarizeReplacementSolverState(candidateSolver)
+      const summary = candidate.summary
+      if (!this.isPathRelinkingCandidateAllowed(summary, achievedMaxRegionCost))
+        continue
+
+      this.applyRerouteMutation({
+        kind: "reroute",
+        routeId: Math.min(...acceptedMutation.routeIds),
+        routeIds: [...acceptedMutation.routeIds],
+        congestionFactor: 0,
+        replacementPath: [],
+        replacementState: candidateSolver.getReplacementState(),
+        replacementRouteMetrics: acceptedMutation.routeIds.map(
+          (routeId, routeIndex) => ({
+            routeId,
+            layerChangeCount:
+              candidateSolver.replacementRouteLayerChangeCountByRouteId[
+                routeId
+              ]!,
+            segmentLength:
+              candidateSolver.replacementRouteSegmentLengthByRouteId[routeId]!,
+            foreignEndpointClearances: endpointKeepout.clearances[routeIndex]!,
+          }),
+        ),
+        routingRiskByRegion: candidate.routingRiskByRegion,
+        segmentRoutingRiskByRegion: candidate.segmentRoutingRiskByRegion,
+        downstreamRiskByRegion: candidate.downstreamRiskByRegion,
+        segmentLengthByRegion: candidate.segmentLengthByRegion,
+        summary,
+      })
+      this.currentSummary = summary
+      acceptedMutation.reverted = true
+      this.revertedRerouteMutationCount += 1
+    }
+  }
+
   private restoreInputStateAfterUnproductivePlateauSearch() {
     this.state.portAssignment = new Int32Array(
       this.inputSolver.state.portAssignment,
@@ -4624,6 +5005,13 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         this.initialSummary.maxRegionCost - COST_EPSILON
     if (rolledBackPlateauMutations) {
       this.restoreInputStateAfterUnproductivePlateauSearch()
+    } else if (
+      this.currentSummary.maxRegionCost <
+      this.initialSummary.maxRegionCost - COST_EPSILON
+    ) {
+      this.removeRedundantBoundaryMutations(this.currentSummary.maxRegionCost)
+      this.removeRedundantRerouteMutations(this.currentSummary.maxRegionCost)
+      this.removeRedundantBoundaryMutations(this.currentSummary.maxRegionCost)
     }
     const finalPeakRegionIds = this.state.regionIntersectionCaches
       .map((cache, regionId) => ({
@@ -4649,6 +5037,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       finalTotalSegmentLength: this.currentSummary.totalSegmentLength,
       finalMaxRoutingRisk: this.currentSummary.maxRoutingRisk,
       finalTotalRoutingRisk: this.currentSummary.totalRoutingRisk,
+      finalMaxSegmentRoutingRisk: this.currentSummary.maxSegmentRoutingRisk,
+      finalTotalSegmentRoutingRisk: this.currentSummary.totalSegmentRoutingRisk,
       finalMaxDownstreamRisk: this.currentSummary.maxDownstreamRisk,
       finalTotalDownstreamRisk: this.currentSummary.totalDownstreamRisk,
       finalMinForeignEndpointClearance:
@@ -4706,6 +5096,8 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         this.pairRerouteFailedSearchIterationCount,
       pairRerouteFailedSearchCount: this.pairRerouteFailedSearchCount,
       reusedRerouteCandidateCount: this.reusedRerouteCandidateCount,
+      revertedBoundaryMutationCount: this.revertedBoundaryMutationCount,
+      revertedRerouteMutationCount: this.revertedRerouteMutationCount,
       optimizationStopReason: reason,
       rolledBackPlateauMutations,
       finalPeakRegionIds,
