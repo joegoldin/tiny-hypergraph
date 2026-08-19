@@ -46,6 +46,23 @@ const createProblem = (): TinyHyperGraphProblem => ({
   regionNetId: new Int32Array(2).fill(-1),
 })
 
+class ExposedRegionCostSolver extends TinyHyperGraphSolver {
+  computeRegionCostForTest(
+    sameLayerIntersections: number,
+    transitionPairIntersections: number,
+    entryExitLayerChanges: number,
+    traceCount: number,
+  ) {
+    return this.computeRegionCostForRegion(
+      0,
+      sameLayerIntersections,
+      transitionPairIntersections,
+      entryExitLayerChanges,
+      traceCount,
+    )
+  }
+}
+
 const getCrossingCost = (regionAvailableZMask: number, portZ: number) => {
   const solver = new TinyHyperGraphSolver(
     createTopology(regionAvailableZMask, portZ),
@@ -204,4 +221,18 @@ test("routing-risk region cost follows the downstream tuned-capacity model", () 
     5,
   )
   expect(denseCrossingRisk).toBeGreaterThan(sparseCrossingRisk)
+})
+
+test("routing-complexity uses downstream capacity and trace occupancy", () => {
+  const topology = createTopology((1 << 0) | (1 << 1), 0)
+  const solver = new ExposedRegionCostSolver(topology, createProblem(), {
+    REGION_COST_MODEL: "routing-complexity",
+  })
+  const sparseCost = solver.computeRegionCostForTest(1, 0, 1, 2)
+  const denseCost = solver.computeRegionCostForTest(1, 0, 1, 6)
+
+  expect(sparseCost).toBeCloseTo(
+    computeRoutingRiskRegionCost(3, 3, 1, 0, 1, 3, 0.3, 2),
+  )
+  expect(denseCost).toBeGreaterThan(sparseCost)
 })

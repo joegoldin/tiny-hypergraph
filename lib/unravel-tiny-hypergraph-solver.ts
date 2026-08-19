@@ -1432,6 +1432,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
   private readonly initialRouteSegmentCounts: Int32Array
   private readonly routeLayerChangeCountByRouteId: Int32Array
   private readonly routeSegmentLengthByRouteId: Float64Array
+  private initialTotalLayerChangeCount = 0
   private readonly terminalKeepouts: IndexedTerminalKeepout[]
   private readonly terminalKeepoutCellSize: number
   private readonly terminalKeepoutIndexesByRegion: Int32Array[]
@@ -1789,6 +1790,7 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
         )
       }
     }
+    this.initialTotalLayerChangeCount = this.countTotalLayerChanges(this)
     for (let routeId = 0; routeId < this.problem.routeCount; routeId++) {
       this.routeForeignEndpointClearancesByRouteId[routeId] =
         this.computeRouteForeignEndpointClearances(this, routeId)
@@ -4051,6 +4053,20 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
     ])
   }
 
+  private countTotalLayerChanges(solver: TinyHyperGraphSolver): number {
+    let totalLayerChangeCount = 0
+    for (const segments of solver.state.regionSegments) {
+      for (const [, fromPortId, toPortId] of segments) {
+        if (
+          solver.topology.portZ[fromPortId] !== solver.topology.portZ[toPortId]
+        ) {
+          totalLayerChangeCount += 1
+        }
+      }
+    }
+    return totalLayerChangeCount
+  }
+
   private computeRegionMetricsWithoutRoutes(
     regionId: RegionId,
     removedRouteIds: ReadonlySet<RouteId>,
@@ -5013,6 +5029,13 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       this.removeRedundantRerouteMutations(this.currentSummary.maxRegionCost)
       this.removeRedundantBoundaryMutations(this.currentSummary.maxRegionCost)
     }
+    const optimizedTotalLayerChangeCount = this.countTotalLayerChanges(this)
+    const rolledBackLayerChangeRegression =
+      optimizedTotalLayerChangeCount > this.initialTotalLayerChangeCount
+    if (rolledBackLayerChangeRegression) {
+      this.restoreInputStateAfterUnproductivePlateauSearch()
+    }
+    const finalTotalLayerChangeCount = this.countTotalLayerChanges(this)
     const finalPeakRegionIds = this.state.regionIntersectionCaches
       .map((cache, regionId) => ({
         regionId,
@@ -5041,6 +5064,9 @@ export class UnravelTinyHyperGraphSolver extends TinyHyperGraphSolver {
       finalTotalSegmentRoutingRisk: this.currentSummary.totalSegmentRoutingRisk,
       finalMaxDownstreamRisk: this.currentSummary.maxDownstreamRisk,
       finalTotalDownstreamRisk: this.currentSummary.totalDownstreamRisk,
+      initialTotalLayerChangeCount: this.initialTotalLayerChangeCount,
+      finalTotalLayerChangeCount,
+      rolledBackLayerChangeRegression,
       finalMinForeignEndpointClearance:
         this.getMinimumForeignEndpointClearance(),
       acceptedMutationCount: this.acceptedMutationCount,

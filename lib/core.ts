@@ -1014,7 +1014,10 @@ export class TinyHyperGraphSolver extends BaseSolver {
     numEntryExitChanges: number,
     traceCount: number,
   ): number {
-    if (this.REGION_COST_MODEL === "routing-risk") {
+    if (
+      this.REGION_COST_MODEL === "routing-risk" ||
+      this.REGION_COST_MODEL === "routing-complexity"
+    ) {
       const metadata = this.topology.regionMetadata?.[regionId]
       if (
         typeof metadata === "object" &&
@@ -1029,6 +1032,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
         numSameLayerIntersections,
         numCrossLayerIntersections,
         numEntryExitChanges,
+        traceCount,
       )
     }
     if (this.TRACE_DENSITY_COST_FACTOR === 0) {
