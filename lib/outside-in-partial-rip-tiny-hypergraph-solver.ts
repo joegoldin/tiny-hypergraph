@@ -435,6 +435,9 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
     if (routeIdsTouchingHotRegions.size === 0) return false
     const preferredPreservedRouteIds =
       this.getRouteIdsPreferredForPreservation()
+    const hasNonPreferredRouteTouchingHotRegions = [
+      ...routeIdsTouchingHotRegions,
+    ].some((routeId) => !preferredPreservedRouteIds.has(routeId))
 
     const retainedSegmentsByRegion = Array.from(
       { length: this.topology.regionCount },
@@ -450,7 +453,8 @@ export class OutsideInPartialRipTinyHyperGraphSolver extends DistanceAwareTinyHy
 
       if (
         !routeIdsTouchingHotRegions.has(routeId) ||
-        preferredPreservedRouteIds.has(routeId)
+        (hasNonPreferredRouteTouchingHotRegions &&
+          preferredPreservedRouteIds.has(routeId))
       ) {
         for (const segment of orderedSegments) {
           this.appendRetainedSegment(retainedSegmentsByRegion, routeId, segment)

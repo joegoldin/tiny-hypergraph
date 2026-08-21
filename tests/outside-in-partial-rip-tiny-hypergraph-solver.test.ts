@@ -92,7 +92,7 @@ test("partial rip preserves both outside route ends", () => {
   expect(solver.stats.retainedPartialRipSegmentCount).toBe(3)
 })
 
-test("partial rip leaves preferred routes unchanged", () => {
+test("partial rip leaves preferred routes unchanged when another hot route can move", () => {
   const solver = createLinearSolver(24, {}, 2)
   solver.preferredPreservedRouteIds.add(0)
   for (let regionId = 1; regionId <= 4; regionId++) {
@@ -116,6 +116,23 @@ test("partial rip leaves preferred routes unchanged", () => {
     [0, 2, 3],
     [0, 3, 4],
   ])
+})
+
+test("partial rip locally rerips a preferred route when every hot route is preferred", () => {
+  const solver = createLinearSolver()
+  solver.preferredPreservedRouteIds.add(0)
+  const regionCosts = new Float64Array(6)
+  regionCosts[3] = 1
+
+  expect(solver.prepare([3], regionCosts)).toBe(true)
+  expect(solver.getActiveEndpoints(0)).toEqual([2, 3])
+  expect(solver.state.unroutedRoutes).toEqual([0])
+  expect(solver.state.regionSegments.flat()).toEqual([
+    [0, 0, 1],
+    [0, 1, 2],
+    [0, 3, 4],
+  ])
+  expect(solver.stats.partialRipCount).toBe(1)
 })
 
 test("a near-target initial solution selects the larger quality window", () => {
