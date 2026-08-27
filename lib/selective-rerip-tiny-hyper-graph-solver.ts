@@ -388,6 +388,7 @@ export class SelectiveReripTinyHyperGraphSolver extends OutsideInPartialRipTinyH
     ] ?? []) {
       if (neighborPortId === state.portId) continue
       if (this.isPortReservedForDifferentNet(neighborPortId)) continue
+      if (!this.isPortTransitionAllowed(state.portId, neighborPortId)) continue
       if (
         neighborPortId !== goalPortId &&
         this.problem.portSectionMask[neighborPortId] === 0
