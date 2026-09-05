@@ -10,7 +10,7 @@ import type {
   TinyHyperGraphTopology,
 } from "../core"
 import { TinyHyperGraphSolver } from "../core"
-import type { RegionId } from "../types"
+import type { RegionId, RouteId } from "../types"
 import type { TinyHyperGraphSectionSolverOptions } from "./index"
 import { getActiveSectionRouteIds, TinyHyperGraphSectionSolver } from "./index"
 import {
@@ -217,62 +217,14 @@ const findBestAutomaticSectionMask = (
 
     seenPortSectionMasks.add(portSectionMaskKey)
 
+    const eligibilityStartTime = performance.now()
+    let activeRouteIds: RouteId[]
     try {
-      const eligibilityStartTime = performance.now()
-      const activeRouteIds = getActiveSectionRouteIds(
+      activeRouteIds = getActiveSectionRouteIds(
         topology,
         candidateProblem,
         solution,
       )
-      candidateEligibilityMs += performance.now() - eligibilityStartTime
-
-      if (activeRouteIds.length === 0) {
-        continue
-      }
-
-      candidateCount += 1
-
-      const candidateInitStartTime = performance.now()
-      const sectionSolver = new TinyHyperGraphSectionSolver(
-        topology,
-        candidateProblem,
-        solution,
-        sectionSolverOptions,
-      )
-      candidateInitMs += performance.now() - candidateInitStartTime
-
-      const candidateSolveStartTime = performance.now()
-      sectionSolver.solve()
-      candidateSolveMs += performance.now() - candidateSolveStartTime
-
-      if (sectionSolver.failed || !sectionSolver.solved) {
-        continue
-      }
-
-      const finalMaxRegionCost = Number(
-        sectionSolver.stats.finalMaxRegionCost ??
-          getMaxRegionCost(sectionSolver.getSolvedSolver()),
-      )
-
-      if (finalMaxRegionCost < bestFinalMaxRegionCost - IMPROVEMENT_EPSILON) {
-        const candidateReplayScoreStartTime = performance.now()
-        const replayedFinalMaxRegionCost = getSerializedOutputMaxRegionCost(
-          sectionSolver.getOutput(),
-          sectionSolverOptions,
-        )
-        candidateReplayScoreMs +=
-          performance.now() - candidateReplayScoreStartTime
-
-        if (
-          replayedFinalMaxRegionCost <
-          bestFinalMaxRegionCost - IMPROVEMENT_EPSILON
-        ) {
-          bestFinalMaxRegionCost = replayedFinalMaxRegionCost
-          bestPortSectionMask = new Int8Array(candidateProblem.portSectionMask)
-          winningCandidateLabel = candidate.label
-          winningCandidateFamily = candidate.family
-        }
-      }
     } catch (error) {
       if (
         error instanceof Error &&
@@ -281,6 +233,55 @@ const findBestAutomaticSectionMask = (
         continue
       }
       throw error
+    }
+    candidateEligibilityMs += performance.now() - eligibilityStartTime
+
+    if (activeRouteIds.length === 0) {
+      continue
+    }
+
+    candidateCount += 1
+
+    const candidateInitStartTime = performance.now()
+    const sectionSolver = new TinyHyperGraphSectionSolver(
+      topology,
+      candidateProblem,
+      solution,
+      sectionSolverOptions,
+    )
+    candidateInitMs += performance.now() - candidateInitStartTime
+
+    const candidateSolveStartTime = performance.now()
+    sectionSolver.solve()
+    candidateSolveMs += performance.now() - candidateSolveStartTime
+
+    if (sectionSolver.failed || !sectionSolver.solved) {
+      continue
+    }
+
+    const finalMaxRegionCost = Number(
+      sectionSolver.stats.finalMaxRegionCost ??
+        getMaxRegionCost(sectionSolver.getSolvedSolver()),
+    )
+
+    if (finalMaxRegionCost < bestFinalMaxRegionCost - IMPROVEMENT_EPSILON) {
+      const candidateReplayScoreStartTime = performance.now()
+      const replayedFinalMaxRegionCost = getSerializedOutputMaxRegionCost(
+        sectionSolver.getOutput(),
+        sectionSolverOptions,
+      )
+      candidateReplayScoreMs +=
+        performance.now() - candidateReplayScoreStartTime
+
+      if (
+        replayedFinalMaxRegionCost <
+        bestFinalMaxRegionCost - IMPROVEMENT_EPSILON
+      ) {
+        bestFinalMaxRegionCost = replayedFinalMaxRegionCost
+        bestPortSectionMask = new Int8Array(candidateProblem.portSectionMask)
+        winningCandidateLabel = candidate.label
+        winningCandidateFamily = candidate.family
+      }
     }
   }
 

@@ -14,6 +14,29 @@ import {
 } from "tests/fixtures/section-solver.fixture"
 
 test("section pipeline propagates one regional cost adjustment to every solver", () => {
+  let misleadingErrorAdjustmentCalls = 0
+  const misleadingErrorPipeline = new TinyHyperGraphSectionPipelineSolver({
+    serializedHyperGraph: sectionSolverFixtureGraph,
+    solveGraphOptions: {
+      regionCostAdjustment: () => 0.01,
+    },
+    sectionSolverOptions: {
+      regionCostAdjustment: () => {
+        misleadingErrorAdjustmentCalls += 1
+        if (misleadingErrorAdjustmentCalls === 21) {
+          throw new Error(
+            "callback enters the section multiple times unexpectedly",
+          )
+        }
+        return 0
+      },
+    },
+  })
+
+  expect(() => misleadingErrorPipeline.solve()).toThrow(
+    "callback enters the section multiple times unexpectedly",
+  )
+
   let automaticSectionAdjustmentCalls = 0
   const invalidAutomaticSectionPipeline =
     new TinyHyperGraphSectionPipelineSolver({
