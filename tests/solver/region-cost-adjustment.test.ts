@@ -74,17 +74,19 @@ test("regional adjustment contributes to cached and candidate region costs", () 
   const unadjustedCandidateTotal = computeRegionCost(4, 4, 1, 0, 1, 2)
 
   expect(candidateCost).toBeCloseTo(unadjustedCandidateTotal + 1.5 - cachedCost)
-})
 
-test("regional adjustment rejects non-finite and negative results", () => {
   for (const adjustment of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
-    const solver = new TinyHyperGraphSolver(createTopology(), createProblem(), {
-      regionCostAdjustment: () => adjustment,
-    })
-    solver.state.currentRouteNetId = 0
-
-    expect(() => solver.appendSegmentToRegionCache(0, 0, 2)).toThrow(
-      `Invalid regional cost adjustment for region 0: ${adjustment}`,
+    const invalidAdjustmentSolver = new TinyHyperGraphSolver(
+      createTopology(),
+      createProblem(),
+      {
+        regionCostAdjustment: () => adjustment,
+      },
     )
+    invalidAdjustmentSolver.state.currentRouteNetId = 0
+
+    expect(() =>
+      invalidAdjustmentSolver.appendSegmentToRegionCache(0, 0, 2),
+    ).toThrow(`Invalid regional cost adjustment for region 0: ${adjustment}`)
   }
 })

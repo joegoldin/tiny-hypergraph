@@ -273,8 +273,14 @@ const findBestAutomaticSectionMask = (
           winningCandidateFamily = candidate.family
         }
       }
-    } catch {
-      // Skip invalid section masks that split a route into multiple spans.
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("enters the section multiple times")
+      ) {
+        continue
+      }
+      throw error
     }
   }
 
