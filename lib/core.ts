@@ -248,8 +248,22 @@ export interface TinyHyperGraphWorkingState {
   regionCongestionCost: Float64Array
 }
 
+export interface TinyHyperGraphRegionCostContext {
+  regionId: RegionId
+  regionMetadata: Record<string, unknown> | undefined
+  sameLayerCrossings: number
+  crossLayerCrossings: number
+  entryExitLayerChanges: number
+  traceCount: number
+}
+
+export type TinyHyperGraphRegionCostAdjustment = (
+  context: TinyHyperGraphRegionCostContext,
+) => number
+
 export interface TinyHyperGraphSolverOptions {
   minViaPadDiameter?: number
+  regionCostAdjustment?: TinyHyperGraphRegionCostAdjustment
   DISTANCE_TO_COST?: number
   RIP_THRESHOLD_START?: number
   RIP_THRESHOLD_END?: number
@@ -298,6 +312,7 @@ export interface TinyHyperGraphSolverOptions {
 
 export interface TinyHyperGraphSolverOptionTarget {
   minViaPadDiameter: number
+  regionCostAdjustment?: TinyHyperGraphRegionCostAdjustment
   DISTANCE_TO_COST: number
   RIP_THRESHOLD_START: number
   RIP_THRESHOLD_END: number
@@ -337,6 +352,9 @@ export const applyTinyHyperGraphSolverOptions = (
 
   if (options.minViaPadDiameter !== undefined) {
     solver.minViaPadDiameter = options.minViaPadDiameter
+  }
+  if (options.regionCostAdjustment !== undefined) {
+    solver.regionCostAdjustment = options.regionCostAdjustment
   }
   if (options.DISTANCE_TO_COST !== undefined) {
     solver.DISTANCE_TO_COST = options.DISTANCE_TO_COST
@@ -437,6 +455,7 @@ export const getTinyHyperGraphSolverOptions = (
   solver: TinyHyperGraphSolverOptionTarget,
 ): TinyHyperGraphSolverOptions => ({
   minViaPadDiameter: solver.minViaPadDiameter,
+  regionCostAdjustment: solver.regionCostAdjustment,
   DISTANCE_TO_COST: solver.DISTANCE_TO_COST,
   RIP_THRESHOLD_START: solver.RIP_THRESHOLD_START,
   RIP_THRESHOLD_END: solver.RIP_THRESHOLD_END,
@@ -509,6 +528,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
 
   DISTANCE_TO_COST = 0.05 // 50mm = 1 cost unit (1 cost unit ~ 100% chance of failure)
   minViaPadDiameter = DEFAULT_MIN_VIA_PAD_DIAMETER
+  regionCostAdjustment?: TinyHyperGraphRegionCostAdjustment
 
   RIP_THRESHOLD_START = 0.05
   RIP_THRESHOLD_END = 0.8
@@ -967,7 +987,7 @@ export class TinyHyperGraphSolver extends BaseSolver {
     numEntryExitChanges: number,
     traceCount: number,
   ): number {
-    return computeRegionCost(
+    const baseCost = computeRegionCost(
       this.topology.regionWidth[regionId],
       this.topology.regionHeight[regionId],
       numSameLayerIntersections,
@@ -978,6 +998,21 @@ export class TinyHyperGraphSolver extends BaseSolver {
       this.minViaPadDiameter,
       this.TRACE_DENSITY_COST_FACTOR,
     )
+    const adjustment =
+      this.regionCostAdjustment?.({
+        regionId,
+        regionMetadata: this.topology.regionMetadata?.[regionId],
+        sameLayerCrossings: numSameLayerIntersections,
+        crossLayerCrossings: numCrossLayerIntersections,
+        entryExitLayerChanges: numEntryExitChanges,
+        traceCount,
+      }) ?? 0
+    if (!Number.isFinite(adjustment) || adjustment < 0) {
+      throw new Error(
+        `Invalid regional cost adjustment for region ${regionId}: ${adjustment}`,
+      )
+    }
+    return baseCost + adjustment
   }
 
   populateSegmentGeometryScratch(

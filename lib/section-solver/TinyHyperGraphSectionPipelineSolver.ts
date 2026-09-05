@@ -4,6 +4,7 @@ import type { GraphicsObject } from "graphics-debug"
 import { loadSerializedHyperGraph } from "../compat/loadSerializedHyperGraph"
 import type {
   TinyHyperGraphProblem,
+  TinyHyperGraphRegionCostAdjustment,
   TinyHyperGraphSolution,
   TinyHyperGraphSolverOptions,
   TinyHyperGraphTopology,
@@ -312,6 +313,7 @@ export interface TinyHyperGraphSectionPipelineSearchConfig {
 export interface TinyHyperGraphSectionPipelineInput {
   serializedHyperGraph: SerializedHyperGraph
   minViaPadDiameter?: number
+  regionCostAdjustment?: TinyHyperGraphRegionCostAdjustment
   createSectionMask?: (context: TinyHyperGraphSectionMaskContext) => Int8Array
   solveGraphOptions?: TinyHyperGraphSolverOptions
   sectionSolverOptions?: TinyHyperGraphSectionSolverOptions
@@ -343,6 +345,9 @@ export class TinyHyperGraphSectionPipelineSolver extends BasePipelineSolver<Tiny
       ...(this.inputProblem.minViaPadDiameter === undefined
         ? {}
         : { minViaPadDiameter: this.inputProblem.minViaPadDiameter }),
+      ...(this.inputProblem.regionCostAdjustment === undefined
+        ? {}
+        : { regionCostAdjustment: this.inputProblem.regionCostAdjustment }),
       ...this.inputProblem.solveGraphOptions,
     }
   }
@@ -353,6 +358,9 @@ export class TinyHyperGraphSectionPipelineSolver extends BasePipelineSolver<Tiny
       ...(this.inputProblem.minViaPadDiameter === undefined
         ? {}
         : { minViaPadDiameter: this.inputProblem.minViaPadDiameter }),
+      ...(this.inputProblem.regionCostAdjustment === undefined
+        ? {}
+        : { regionCostAdjustment: this.inputProblem.regionCostAdjustment }),
       ...this.inputProblem.sectionSolverOptions,
     }
   }
