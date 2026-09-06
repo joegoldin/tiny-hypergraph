@@ -1815,8 +1815,39 @@ export class TinyHyperGraphSolver extends BaseSolver {
 class GreedyFinalRouteSolver extends TinyHyperGraphSolver {
   override computeG(
     currentCandidate: Candidate,
-    _neighborPortId: PortId,
+    neighborPortId: PortId,
+    _maximumCost = Number.POSITIVE_INFINITY,
+    knownSegmentDistance?: number,
   ): number {
-    return currentCandidate.g
+    const feasibilityCost = super.computeG(
+      currentCandidate,
+      neighborPortId,
+      Number.POSITIVE_INFINITY,
+      knownSegmentDistance,
+    )
+    return Number.isFinite(feasibilityCost)
+      ? currentCandidate.g
+      : Number.POSITIVE_INFINITY
+  }
+
+  override onPathFound(finalCandidate: Candidate): void {
+    const goalPortId = this.state.goalPortId
+    if (finalCandidate.portId === goalPortId) {
+      super.onPathFound(finalCandidate)
+      return
+    }
+
+    const g = this.computeG(finalCandidate, goalPortId)
+    if (!Number.isFinite(g)) return
+
+    super.onPathFound({
+      prevRegionId: finalCandidate.nextRegionId,
+      nextRegionId: finalCandidate.nextRegionId,
+      portId: goalPortId,
+      g,
+      h: 0,
+      f: g,
+      prevCandidate: finalCandidate,
+    })
   }
 }
